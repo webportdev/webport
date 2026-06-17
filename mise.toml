@@ -1,0 +1,238 @@
+[tools]
+go="latest"
+
+[tasks.all]
+description = "Build webport, webportctl, and webport-dns"
+run = """
+mise run build
+mise run build-client
+mise run build-dns
+"""
+
+[tasks.check-not-root]
+description = "Fail if installation tasks are run as root"
+run = """
+if [ "$(id -u)" -eq 0 ]; then
+  echo "Do not run mise installation tasks as root; rerun without sudo." >&2
+  exit 1
+fi
+"""
+
+[tasks.setup]
+description = "Run the interactive installer for the current platform"
+run = """
+mise run check-not-root
+HOST_OS="${HOST_OS:-$(uname -s)}"
+if [ "$HOST_OS" = "Darwin" ]; then
+  ./scripts/install-macos.sh
+else
+  ./scripts/install.sh
+fi
+"""
+
+[tasks.installer-test]
+description = "Run Linux installer tests"
+run = "./scripts/install_test.sh"
+
+[tasks.installer-test-macos]
+description = "Run macOS installer tests"
+run = "./scripts/install_macos_test.sh"
+
+[tasks.build]
+description = "Build the webport server"
+run = """
+GO="${GO:-go}"
+echo "Building webport..."
+mkdir -p build
+"$GO" build -o build/webport ./cmd/webport
+"""
+
+[tasks.build-client]
+description = "Build the webportctl client"
+run = """
+GO="${GO:-go}"
+echo "Building webportctl..."
+mkdir -p build
+"$GO" build -o build/webportctl ./cmd/webportctl
+"""
+
+[tasks.build-dns]
+description = "Build the webport-dns administration command"
+run = """
+GO="${GO:-go}"
+echo "Building webport-dns..."
+mkdir -p build
+"$GO" build -o build/webport-dns ./cmd/webport-dns
+"""
+
+[tasks.install]
+description = "Install webport to /usr/local/bin"
+run = """
+SUDO="${SUDO:-sudo}"
+mise run check-not-root
+mise run build
+echo "Installing webport to /usr/local/bin..."
+"$SUDO" install -m 755 build/webport /usr/local/bin/webport
+"""
+
+[tasks.install-client]
+description = "Install webportctl to /usr/local/bin"
+run = """
+SUDO="${SUDO:-sudo}"
+mise run check-not-root
+mise run build-client
+echo "Installing webportctl to /usr/local/bin..."
+"$SUDO" install -m 755 build/webportctl /usr/local/bin/webportctl
+"""
+
+[tasks.install-dns]
+description = "Install webport-dns to /usr/local/bin"
+run = """
+SUDO="${SUDO:-sudo}"
+mise run check-not-root
+mise run build-dns
+echo "Installing webport-dns to /usr/local/bin..."
+"$SUDO" install -m 755 build/webport-dns /usr/local/bin/webport-dns
+"""
+
+[tasks.install-all]
+description = "Run the full native installer for the current platform"
+run = """
+mise run check-not-root
+HOST_OS="${HOST_OS:-$(uname -s)}"
+if [ "$HOST_OS" = "Darwin" ]; then
+  ./scripts/install-macos.sh
+else
+  ./scripts/install.sh
+fi
+"""
+
+[tasks.clean]
+description = "Remove build artifacts"
+run = """
+echo "Cleaning build artifacts..."
+rm -rf build
+"""
+
+[tasks.test]
+description = "Run Go tests"
+run = """
+GO="${GO:-go}"
+echo "Running tests..."
+"$GO" test -v ./...
+"""
+
+[tasks.run]
+description = "Build and run the webport server"
+run = """
+mise run build
+echo "Running webport..."
+build/webport
+"""
+
+[tasks.install-service]
+description = "Install the Linux systemd service"
+run = """
+SUDO="${SUDO:-sudo}"
+mise run check-not-root
+HOST_OS="${HOST_OS:-$(uname -s)}"
+if [ "$HOST_OS" = "Darwin" ]; then
+  echo "install-service is Linux-only; use 'mise run install-all' or './scripts/install-macos.sh' on macOS." >&2
+  exit 1
+fi
+
+echo "Installing systemd service..."
+"$SUDO" install -m 644 systemd/webport.service /etc/systemd/system/
+"$SUDO" install -d -m 755 /etc/webport
+"$SUDO" install -m 600 systemd/webport.env.example /etc/webport/webport.env.example
+"$SUDO" systemctl daemon-reload
+echo "Service installed. Create /etc/webport/webport.env from /etc/webport/webport.env.example, then:"
+echo "  sudo systemctl enable webport"
+echo "  sudo systemctl start webport"
+"""
+
+[tasks.enable]
+description = "Enable the webport systemd service"
+run = "systemctl enable webport.service"
+
+[tasks.start]
+description = "Start the webport systemd service"
+run = "systemctl start webport.service"
+
+[tasks.stop]
+description = "Stop the webport systemd service"
+run = "systemctl stop webport.service"
+
+[tasks.restart]
+description = "Restart the webport systemd service"
+run = "systemctl restart webport.service"
+
+[tasks.status]
+description = "Show webport systemd service status"
+run = "systemctl status webport.service"
+
+[tasks.logs]
+description = "Follow webport systemd service logs"
+run = "journalctl -u webport.service -f"
+
+[tasks.uninstall]
+description = "Stop services and remove installed webport files"
+run = """
+echo "Stopping and uninstalling webport..."
+systemctl stop webport.service 2>/dev/null || true
+systemctl disable webport.service 2>/dev/null || true
+rm -f /etc/systemd/system/webport.service
+systemctl daemon-reload
+rm -f /usr/local/bin/webport
+rm -f /usr/local/bin/webportctl
+rm -f /usr/local/bin/webport-dns
+echo "Uninstalled webport and webportctl"
+"""
+
+[tasks.dev]
+description = "Run webport in development mode without modifying system Caddy"
+run = """
+GO="${GO:-go}"
+echo "Running in development mode..."
+WEBPORT_BASE_DOMAIN=example.com \
+WEBPORT_PORT="${WEBPORT_PORT:-8080}" \
+WEBPORT_CADDYFILE_PATH=/tmp/webport-Caddyfile \
+WEBPORT_CADDY_RELOAD_CMD="echo 'Would reload caddy'" \
+"$GO" run ./cmd/webport
+"""
+
+[tasks.fmt]
+description = "Format Go code"
+run = """
+GO="${GO:-go}"
+"$GO" fmt ./...
+"""
+
+[tasks.lint]
+description = "Run Go vet"
+run = """
+GO="${GO:-go}"
+"$GO" vet ./...
+"""
+
+[tasks.build-all]
+description = "Build release binaries for Linux and macOS"
+run = """
+GO="${GO:-go}"
+echo "Building for multiple platforms..."
+mkdir -p build
+GOOS=linux GOARCH=amd64 "$GO" build -o build/webport-linux-amd64 ./cmd/webport
+GOOS=linux GOARCH=arm64 "$GO" build -o build/webport-linux-arm64 ./cmd/webport
+GOOS=darwin GOARCH=amd64 "$GO" build -o build/webport-darwin-amd64 ./cmd/webport
+GOOS=darwin GOARCH=arm64 "$GO" build -o build/webport-darwin-arm64 ./cmd/webport
+GOOS=linux GOARCH=amd64 "$GO" build -o build/webportctl-linux-amd64 ./cmd/webportctl
+GOOS=linux GOARCH=arm64 "$GO" build -o build/webportctl-linux-arm64 ./cmd/webportctl
+GOOS=darwin GOARCH=amd64 "$GO" build -o build/webportctl-darwin-amd64 ./cmd/webportctl
+GOOS=darwin GOARCH=arm64 "$GO" build -o build/webportctl-darwin-arm64 ./cmd/webportctl
+GOOS=linux GOARCH=amd64 "$GO" build -o build/webport-dns-linux-amd64 ./cmd/webport-dns
+GOOS=linux GOARCH=arm64 "$GO" build -o build/webport-dns-linux-arm64 ./cmd/webport-dns
+GOOS=darwin GOARCH=amd64 "$GO" build -o build/webport-dns-darwin-amd64 ./cmd/webport-dns
+GOOS=darwin GOARCH=arm64 "$GO" build -o build/webport-dns-darwin-arm64 ./cmd/webport-dns
+echo "Built binaries:"
+ls -lh build/
+"""

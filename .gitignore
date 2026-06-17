@@ -1,0 +1,60 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# Build artifacts
+bin/
+build/
+dist/
+/webport
+/webport-dns
+/webportctl
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+
+# Logs
+*.log
+
+# Caddy files (generated)
+*.caddyfile
+/Caddyfile
+
+# Test scripts that are for development only
+diagnose_watchdog.sh
+test_watchdog_fix.sh
+final_verify_watchdog.sh
+
+# Context/documentation files not for version control
+webport-context.md

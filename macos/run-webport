@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+
+while IFS= read -r assignment || [[ -n "$assignment" ]]; do
+	[[ -z "$assignment" || "$assignment" == \#* ]] && continue
+	export "$assignment"
+done </usr/local/etc/webport/webport.env
+
+exec /usr/local/bin/webport

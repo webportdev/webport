@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ -f /usr/local/etc/caddy/caddy.env ]]; then
+	while IFS= read -r assignment || [[ -n "$assignment" ]]; do
+		[[ -z "$assignment" || "$assignment" == \#* ]] && continue
+		export "$assignment"
+	done </usr/local/etc/caddy/caddy.env
+fi
+
+exec /usr/local/bin/caddy run --config /usr/local/etc/caddy/Caddyfile
