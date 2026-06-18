@@ -109,10 +109,49 @@ chmod +x "$out_dir/$out_name"
 EOF
 chmod +x "$shims/docker"
 
+cat >"$shims/curl" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+out=
+url=
+while (($#)); do
+	case "$1" in
+		-o) out=$2; shift 2 ;;
+		-*) shift ;;
+		*) url=$1; shift ;;
+	esac
+done
+printf '%s\n' "$url" >>"${CURL_LOG:?}"
+if [[ -z "$out" ]]; then
+	printf '{"tag_name":"v0.0.1"}\n'
+	exit 0
+fi
+mkdir -p "$(dirname "$out")"
+case "$(basename "$url")" in
+	caddy-*)
+		cat >"$out" <<'CADDY'
+#!/usr/bin/env bash
+case "${1:-}" in
+	list-modules)
+		printf '%s\n' dns.providers.cloudflare dns.providers.digitalocean dns.providers.route53 dns.providers.acmedns
+		;;
+	validate) exit 0 ;;
+	*) exit 0 ;;
+esac
+CADDY
+		chmod +x "$out"
+		;;
+	*) printf 'downloaded %s\n' "$url" >"$out" ;;
+esac
+EOF
+chmod +x "$shims/curl"
+
 export PATH="$shims:$PATH"
 export SYSTEMCTL_LOG="$tmp/systemctl.log"
 export DNS_SYNC_LOG="$tmp/dns-sync.log"
 export DOCKER_LOG="$tmp/docker.log"
+export CURL_LOG="$tmp/curl.log"
+export WEBPORT_CADDY_RELEASE_VERSION=v0.0.1
 credentials="$tmp/cloudflare.env"
 printf 'CLOUDFLARE_API_TOKEN=test-secret\n' >"$credentials"
 
@@ -178,7 +217,7 @@ assert_mode "$root/etc/caddy/caddy.env" 600
 assert_mode "$root/etc/webport/webport.env" 600
 assert_contains "$root/etc/webport/webport.env" "WEBPORT_TLS_DNS_PROVIDER_MODULE=cloudflare"
 assert_not_contains "$root/etc/systemd/system/caddy.service" "--environ"
-assert_contains "$DOCKER_LOG" "golang:1.25"
+assert_contains "$CURL_LOG" "caddy-cloudflare-linux-amd64"
 
 root="$tmp/root-dns"
 WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
@@ -197,6 +236,7 @@ WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
 	--mode caddy --provider digitalocean --credentials-file "$digitalocean_credentials" --non-interactive --yes
 assert_contains "$root/etc/caddy/caddy.env" "DO_AUTH_TOKEN=test-secret"
 assert_mode "$root/etc/caddy/caddy.env" 600
+assert_contains "$CURL_LOG" "caddy-digitalocean-linux-amd64"
 
 root="$tmp/root-unmanaged"
 mkdir -p "$root/usr/local/bin"

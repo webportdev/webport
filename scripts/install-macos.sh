@@ -18,6 +18,8 @@ WEBPORT_SOURCE=${WEBPORT_SOURCE:-}
 CADDY_SOURCE=${CADDY_SOURCE:-}
 VERSION=${WEBPORT_VERSION:-}
 RELEASE_BASE_URL=${WEBPORT_RELEASE_BASE_URL:-}
+CADDY_RELEASE_VERSION=${WEBPORT_CADDY_RELEASE_VERSION:-latest}
+CADDY_RELEASE_BASE_URL=${WEBPORT_CADDY_RELEASE_BASE_URL:-}
 ARTIFACT_DIR=${WEBPORT_ARTIFACT_DIR:-}
 DNS_IPV4=
 DNS_IPV6=
@@ -62,8 +64,9 @@ Version overrides:
   --caddy-version VERSION --module-version VERSION
 Binaries:
   --webport-source release|local|build
-  --caddy-source docker|local|build
+  --caddy-source release|docker|local|build
   --version VERSION --release-base-url URL --artifact-dir DIR
+  --caddy-release-version VERSION --caddy-release-base-url URL
 Automation:
   --dns-ipv4 ADDRESS --dns-ipv6 ADDRESS --dns-zone ZONE
   --non-interactive --yes --dry-run
@@ -143,6 +146,8 @@ while (($#)); do
 		--caddy-source) CADDY_SOURCE=${2:-}; shift 2 ;;
 		--version) VERSION=${2:-}; shift 2 ;;
 		--release-base-url) RELEASE_BASE_URL=${2:-}; shift 2 ;;
+		--caddy-release-version) CADDY_RELEASE_VERSION=${2:-}; shift 2 ;;
+		--caddy-release-base-url) CADDY_RELEASE_BASE_URL=${2:-}; shift 2 ;;
 		--artifact-dir) ARTIFACT_DIR=${2:-}; shift 2 ;;
 		--dns-ipv4) DNS_IPV4=${2:-}; CONFIGURE_DNS=1; shift 2 ;;
 		--dns-ipv6) DNS_IPV6=${2:-}; CONFIGURE_DNS=1; shift 2 ;;
@@ -224,9 +229,13 @@ fi
 [[ "$WEBPORT_SOURCE" =~ ^(release|local|build)$ ]] || die "invalid webport source: $WEBPORT_SOURCE"
 
 if [[ -z "$CADDY_SOURCE" ]]; then
-	CADDY_SOURCE=docker
+	if [[ "$PROVIDER" == custom ]]; then
+		CADDY_SOURCE=docker
+	else
+		CADDY_SOURCE=release
+	fi
 fi
-[[ "$CADDY_SOURCE" =~ ^(docker|local|build)$ ]] || die "invalid Caddy source: $CADDY_SOURCE"
+[[ "$CADDY_SOURCE" =~ ^(release|docker|local|build)$ ]] || die "invalid Caddy source: $CADDY_SOURCE"
 
 platform_os() { printf 'darwin'; }
 
@@ -267,6 +276,24 @@ release_base_url() {
 	printf 'https://github.com/%s/releases/latest/download' "$repo"
 }
 
+caddy_release_version() {
+	printf '%s' "${CADDY_RELEASE_VERSION:-latest}"
+}
+
+caddy_release_base_url() {
+	local version=$1
+	if [[ -n "$CADDY_RELEASE_BASE_URL" ]]; then
+		printf '%s' "${CADDY_RELEASE_BASE_URL%/}"
+		return
+	fi
+	local repo=${WEBPORT_CADDY_GITHUB_REPO:-webportdev/webport-caddy}
+	if [[ "$version" == latest ]]; then
+		printf 'https://github.com/%s/releases/latest/download' "$repo"
+		return
+	fi
+	printf 'https://github.com/%s/releases/download/%s' "$repo" "$version"
+}
+
 check_prerequisites() {
 	local missing=() command
 	if [[ "$ROOT" == / && "$(uname -s)" != Darwin ]]; then
@@ -278,7 +305,7 @@ check_prerequisites() {
 	if [[ "$WEBPORT_SOURCE" == build || ( "$MODE" != webport && "$CADDY_SOURCE" == build ) ]]; then
 		command -v go >/dev/null 2>&1 || missing+=("go")
 	fi
-	if [[ "$WEBPORT_SOURCE" == release ]]; then
+	if [[ "$WEBPORT_SOURCE" == release || ( "$MODE" != webport && "$CADDY_SOURCE" == release ) ]]; then
 		command -v curl >/dev/null 2>&1 || missing+=("curl")
 	fi
 	if [[ "$MODE" != webport && "$CADDY_SOURCE" == docker && "$DRY_RUN" == 0 ]]; then
@@ -519,8 +546,18 @@ local_caddy_candidate() {
 }
 
 prepare_caddy_candidate() {
-	local candidate=$1 validation_config directive args
+	local candidate=$1 validation_config directive args os arch version base asset
 	case "$CADDY_SOURCE" in
+		release)
+			os=$(platform_os)
+			arch=$(platform_arch)
+			version=$(caddy_release_version)
+			[[ -n "$version" ]] || die "could not resolve latest webport-caddy release version"
+			base=$(caddy_release_base_url "$version")
+			asset="caddy-$PROVIDER_NAME-$os-$arch"
+			download "$base/$asset" "$candidate"
+			run chmod +x "$candidate"
+			;;
 		build)
 			run mkdir -p "$BUILD_DIR/bin"
 			if (( ! DRY_RUN )); then

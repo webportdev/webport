@@ -1,7 +1,7 @@
 # webport Client Scripts
 
 For supported system installation, use the bootstrap installer. It downloads
-webport release binaries and uses Docker for managed Caddy DNS-01 builds:
+webport release binaries and DNS-enabled managed Caddy binaries:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/webportdev/webport/main/scripts/bootstrap-install.sh | bash
