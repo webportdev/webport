@@ -20,7 +20,7 @@ jobs:
       - run: go vet ./...
       - run: ./scripts/install_test.sh
       - run: ./scripts/install_macos_test.sh
-      - run: xmllint --noout --nonet macos/com.webport.caddy.plist macos/com.webport.webport.plist
+      - run: python3 -c "import pathlib, plistlib; [plistlib.load(path.open('rb')) for path in map(pathlib.Path, ['macos/com.webport.caddy.plist', 'macos/com.webport.webport.plist'])]"
       - name: Cross-build supported targets
         shell: bash
         run: |
