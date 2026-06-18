@@ -12,11 +12,19 @@ A service that dynamically generates and manages Caddy reverse proxy configurati
 - **Systemd integration** - Ready-to-run systemd service with watchdog support
 - **Native macOS support** - LaunchDaemons keep Caddy and webport running without Docker networking
 
+## Why use webport?
+
+webport is useful when a development server needs to behave like a real HTTPS site instead of something only reachable at `localhost`. A common workflow is remote development or device testing: run your app on a workstation, register it with `webportctl`, then open the generated HTTPS URL from a phone, tablet, or another computer.
+
+This helps with browser features that require a secure context outside `localhost`, including service workers, secure cookies, WebAuthn, geolocation, camera and microphone access, and other web APIs that browsers restrict on plain HTTP.
+
+For private development, prefer access over the same LAN or through a VPN such as Tailscale or WireGuard. Only forward public ports or publish DNS to a public IP when you intentionally want the route to be globally reachable by anyone who knows the hostname.
+
 ## Quick Start
 
 ```bash
 # Interactive setup for webport and a DNS-enabled managed Caddy.
-# Downloads webport binaries; uses Docker to build the custom Caddy binary.
+# Downloads webport and DNS-enabled Caddy binaries.
 curl -fsSL https://raw.githubusercontent.com/webportdev/webport/main/scripts/bootstrap-install.sh | bash
 
 # Fully automated Cloudflare setup on Linux or macOS
@@ -30,12 +38,12 @@ curl -fsSL https://raw.githubusercontent.com/webportdev/webport/main/scripts/boo
 
 ### Supported Installer
 
-The supported install path downloads prebuilt `webport`, `webportctl`, and `webport-dns` binaries from GitHub Releases. Managed Caddy installs are built locally in Docker so users do not need a Go toolchain.
+The supported install path downloads prebuilt `webport`, `webportctl`, and `webport-dns` binaries from GitHub Releases. Managed Caddy installs download DNS-enabled binaries from `webportdev/webport-caddy` by default, so users do not need Docker or a Go toolchain for curated providers.
 
 The distro-neutral installer supports Linux systems using systemd:
 
 - `--mode webport`: install `webport` and `webportctl` against an existing Caddy. It verifies the selected DNS module and leaves the existing Caddy service and credentials untouched.
-- `--mode caddy`: build and install a webport-managed Caddy with the selected DNS module. Docker is required by default.
+- `--mode caddy`: install a webport-managed Caddy with the selected DNS module.
 - `--mode full`: install both managed Caddy and webport.
 
 Provider presets are available for `cloudflare`, `digitalocean`, and `route53`. Custom providers are limited to modules accepting one token argument:
@@ -50,9 +58,9 @@ Provider presets are available for `cloudflare`, `digitalocean`, and `route53`. 
 
 Credential files use systemd `EnvironmentFile` syntax, for example `CLOUDFLARE_API_TOKEN=...`, `DO_AUTH_TOKEN=...`, or AWS environment credentials for Route53. Secret values are never accepted as installer arguments. Use `--dry-run` to inspect actions.
 
-Managed Caddy installs are marked under `/etc/caddy/.webport-managed`. The installer refuses to replace an unmarked Caddy installation. It builds and validates upgrades before stopping Caddy and restores the previous managed binary if startup fails.
+Managed Caddy installs are marked under `/etc/caddy/.webport-managed`. The installer refuses to replace an unmarked Caddy installation. It prepares and validates upgrades before stopping Caddy and restores the previous managed binary if startup fails.
 
-If you already have a Caddy binary, install it without Docker:
+If you already have a Caddy binary, install it from a local artifact directory:
 
 ```bash
 ./scripts/install.sh --mode caddy --provider cloudflare \
@@ -62,7 +70,7 @@ If you already have a Caddy binary, install it without Docker:
 
 The local Caddy directory can contain `caddy`, `caddy-cloudflare`, or `caddy-cloudflare-linux-amd64`.
 
-To build only the custom Caddy binary with Docker:
+To use Docker instead of the prebuilt Caddy binaries, pass `--caddy-source docker`. To build only the custom Caddy binary with Docker:
 
 ```bash
 ./scripts/build-caddy-docker.sh --provider cloudflare --output build/caddy
@@ -588,7 +596,7 @@ sudo webport-dns sync --ipv4 203.0.113.10 --ipv6 2001:db8::10
 sudo webport-dns sync --ipv4 203.0.113.10 --zone example.com
 ```
 
-The wildcard records use a 300-second TTL and are DNS-only. Your router/firewall must forward public ports 80 and 443 to the webport host.
+The wildcard records use a 300-second TTL and are DNS-only. Your router/firewall must forward public ports 80 and 443 to the webport host for public access. If the routes are only for your own devices, use LAN access or a VPN such as Tailscale/WireGuard instead of exposing a public IP.
 
 ## Troubleshooting
 
