@@ -35,9 +35,9 @@ if [[ -z "${WEBPORT_BRANCH:-}" ]]; then
   WEBPORT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 fi
 
-# Build route ID (project:branch with slashes replaced by dashes)
-BRANCH_SLUG=$(echo "$WEBPORT_BRANCH" | sed 's/\//-/g')
-ROUTE_ID="${WEBPORT_PROJECT}:${BRANCH_SLUG}"
+# Build route ID (project:branch). Slashes must be escaped inside the URL path segment.
+BRANCH_ESCAPED=${WEBPORT_BRANCH//\//%2F}
+ROUTE_ID="${WEBPORT_PROJECT}:${BRANCH_ESCAPED}"
 
 echo "Removing route: ${ROUTE_ID}"
 

@@ -61,9 +61,6 @@ if ! [[ "$APP_PORT" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-# Sanitize branch name - replace slashes with dashes for route ID
-BRANCH_SANITIZED=$(echo "$WEBPORT_BRANCH" | sed 's/\//-/g')
-
 # Build the JSON payload
 JSON_PAYLOAD=$(cat <<EOF
 {

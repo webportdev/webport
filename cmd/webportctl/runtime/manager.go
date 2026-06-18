@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -148,7 +149,7 @@ func (m *Manager) heartbeatLoop(ctx context.Context) {
 
 // sendHeartbeat sends a heartbeat to refresh the route TTL.
 func (m *Manager) sendHeartbeat() error {
-	routeID := m.buildRouteID()
+	routeID := m.buildEscapedRouteID()
 	url := m.apiURL("/routes/" + routeID + "/heartbeat")
 
 	resp, err := m.client.Post(url, "application/json", http.NoBody)
@@ -177,7 +178,7 @@ func (m *Manager) unregisterRoute() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	routeID := m.buildRouteID()
+	routeID := m.buildEscapedRouteID()
 	url := m.apiURL("/routes/" + routeID)
 
 	req, err := http.NewRequest(http.MethodDelete, url, http.NoBody)
@@ -200,10 +201,13 @@ func (m *Manager) unregisterRoute() error {
 }
 
 // buildRouteID builds the route ID from project and branch.
-// Format: project:branch with slashes replaced by dashes.
+// Format: project:branch.
 func (m *Manager) buildRouteID() string {
-	branchSlug := strings.ReplaceAll(m.cfg.Branch, "/", "-")
-	return fmt.Sprintf("%s:%s", m.cfg.Project, branchSlug)
+	return fmt.Sprintf("%s:%s", m.cfg.Project, m.cfg.Branch)
+}
+
+func (m *Manager) buildEscapedRouteID() string {
+	return url.PathEscape(m.buildRouteID())
 }
 
 // apiURL builds the full API URL for a given path.

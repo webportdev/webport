@@ -4,7 +4,6 @@ package git
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -73,9 +72,15 @@ func findGitRoot() (string, error) {
 		return "", fmt.Errorf("git root is empty")
 	}
 
-	// Verify the .git directory exists
-	if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
-		return "", fmt.Errorf("git root .git directory not found: %w", err)
+	var inside bytes.Buffer
+	cmd = exec.Command(gitPath, "-C", root, "rev-parse", "--is-inside-work-tree")
+	cmd.Stdout = &inside
+	cmd.Stderr = &bytes.Buffer{}
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git root is not a work tree: %w", err)
+	}
+	if strings.TrimSpace(inside.String()) != "true" {
+		return "", fmt.Errorf("git root is not a work tree")
 	}
 
 	return root, nil
