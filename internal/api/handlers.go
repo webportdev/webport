@@ -3,20 +3,22 @@
 // API Endpoints:
 //   - POST   /routes                           Register/update a route
 //   - GET    /routes                           List all active routes
-//   - DELETE /routes/{project}:{branch}        Remove a route
+//   - DELETE /routes/{project}:{branch}            Remove a route
 //   - POST   /routes/{project}:{branch}/heartbeat  Refresh route TTL
 //   - GET    /config                           Query server configuration
 //   - GET    /health                           Health check
 //
-// Route IDs in the URL use the format "{project}:{branch}" where colons
-// avoid ambiguity with dashes in project or branch names.
+// Route IDs use the format "{project}:{branch}". Clients must URL-escape the
+// route ID path segment when branch names contain slashes.
 package api
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -24,6 +26,8 @@ import (
 	"github.com/webportdev/webport/internal/config"
 	"github.com/webportdev/webport/internal/route"
 )
+
+const maxRequestBodyBytes = 1 << 20
 
 // Handlers manages HTTP endpoints
 type Handlers struct {
@@ -65,7 +69,7 @@ func (h *Handlers) handleRoutes(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) handleRouteByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
 		h.deleteRoute(w, r)
-	} else if r.Method == http.MethodPost && h.isHeartbeat(r.URL.Path) {
+	} else if r.Method == http.MethodPost && h.isHeartbeat(r.URL.EscapedPath()) {
 		h.heartbeat(w, r)
 	} else {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -75,7 +79,7 @@ func (h *Handlers) handleRouteByID(w http.ResponseWriter, r *http.Request) {
 // registerRoute handles POST /routes
 func (h *Handlers) registerRoute(w http.ResponseWriter, r *http.Request) {
 	var req route.RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -131,9 +135,9 @@ func (h *Handlers) listRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// deleteRoute handles DELETE /routes/{project}-{branch}
+// deleteRoute handles DELETE /routes/{project}:{branch}
 func (h *Handlers) deleteRoute(w http.ResponseWriter, r *http.Request) {
-	id, ok := h.parseRouteID(r.URL.Path)
+	id, ok := h.parseRouteID(r.URL.EscapedPath())
 	if !ok {
 		http.Error(w, "invalid route ID", http.StatusBadRequest)
 		return
@@ -151,9 +155,9 @@ func (h *Handlers) deleteRoute(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// heartbeat handles POST /routes/{project}-{branch}/heartbeat
+// heartbeat handles POST /routes/{project}:{branch}/heartbeat
 func (h *Handlers) heartbeat(w http.ResponseWriter, r *http.Request) {
-	id, ok := h.parseRouteID(r.URL.Path)
+	id, ok := h.parseRouteID(r.URL.EscapedPath())
 	if !ok {
 		http.Error(w, "invalid route ID", http.StatusBadRequest)
 		return
@@ -167,20 +171,15 @@ func (h *Handlers) heartbeat(w http.ResponseWriter, r *http.Request) {
 
 	// Parse optional TTL override
 	var req route.HeartbeatRequest
-
-	// Read body to check if it's empty
-	body, _ := io.ReadAll(r.Body)
-	r.Body.Close()
-
-	if len(body) == 0 {
-		// Empty body - use default TTL
-	} else {
-		// Try to decode as JSON
-		if err := json.Unmarshal(body, &req); err != nil {
-			// Body has content but it's not valid JSON
+	if err := decodeOptionalJSON(w, r, &req); err != nil {
+		if !errors.Is(err, io.EOF) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
+	}
+	if err := req.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	ttl := h.cfg.DefaultTTL
@@ -257,19 +256,39 @@ func (h *Handlers) isHeartbeat(path string) bool {
 }
 
 // parseRouteID extracts RouteID from URL path
-// Expected: /routes/{project}-{branch} or /routes/{project}-{branch}/heartbeat
+// Expected: /routes/{project}:{branch} or /routes/{project}:{branch}/heartbeat.
+// The route ID path segment must be URL-escaped if the branch contains slashes.
 func (h *Handlers) parseRouteID(path string) (route.RouteID, bool) {
 	parts := splitPath(path)
 	if len(parts) < 2 {
 		return route.RouteID{}, false
 	}
 
-	idStr := parts[1]
+	idStr, err := url.PathUnescape(parts[1])
+	if err != nil {
+		return route.RouteID{}, false
+	}
 	id, err := route.RouteIDFromString(idStr)
 	if err != nil {
 		return route.RouteID{}, false
 	}
 	return id, true
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	defer r.Body.Close()
+	return json.NewDecoder(r.Body).Decode(dst)
+}
+
+func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	defer r.Body.Close()
+	err := json.NewDecoder(r.Body).Decode(dst)
+	if errors.Is(err, io.EOF) {
+		return io.EOF
+	}
+	return err
 }
 
 // splitPath splits a URL path into components

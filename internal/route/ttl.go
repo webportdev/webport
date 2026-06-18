@@ -2,6 +2,7 @@ package route
 
 import (
 	"log"
+	"sync"
 	"time"
 )
 
@@ -12,6 +13,7 @@ type TTLChecker struct {
 	onExpire func([]Route) // Callback for expired routes
 	stopCh   chan struct{}
 	doneCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // NewTTLChecker creates a new TTL checker
@@ -50,6 +52,8 @@ func (t *TTLChecker) Start() {
 
 // Stop gracefully shuts down the checker
 func (t *TTLChecker) Stop() {
-	close(t.stopCh)
+	t.stopOnce.Do(func() {
+		close(t.stopCh)
+	})
 	<-t.doneCh
 }

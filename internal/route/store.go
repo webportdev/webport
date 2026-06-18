@@ -5,9 +5,8 @@
 //   - RouteID: Composite key for routes (project + branch)
 //   - TTLChecker: Background goroutine that expires inactive routes
 //
-// Route IDs are formatted as "{project}:{branch}" where branch slashes
-// are replaced with dashes (e.g., "myapp:feature-auth" for project "myapp"
-// and branch "feature/auth").
+// Route IDs are formatted as "{project}:{branch}". Clients must URL-escape
+// branch slashes when route IDs are used as HTTP path segments.
 package route
 
 import (

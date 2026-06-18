@@ -33,10 +33,10 @@ func ValidBranchName(name string) bool {
 
 // Route represents a single reverse proxy route
 type Route struct {
-	Project   string    `json:"project"`   // e.g., "myapp"
-	Branch    string    `json:"branch"`    // e.g., "feature/auth"
-	Port      int       `json:"port"`      // e.g., 3000
-	Domain    string    `json:"domain"`    // e.g., "myapp-feature-auth.mond.boo"
+	Project   string    `json:"project"` // e.g., "myapp"
+	Branch    string    `json:"branch"`  // e.g., "feature/auth"
+	Port      int       `json:"port"`    // e.g., 3000
+	Domain    string    `json:"domain"`  // e.g., "myapp-feature-auth.mond.boo"
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"` // TTL-based expiration
 }
@@ -47,12 +47,11 @@ type RouteID struct {
 	Branch  string
 }
 
-// String returns the string representation used in URLs
-// Format: {project}:{branch} where branch slashes are replaced with dashes
-// Using colon as delimiter avoids ambiguity with dashes in project/branch names
+// String returns the string representation used in URLs.
+// Format: {project}:{branch}. Clients must URL-escape the result when placing
+// it in a path segment so branch slashes remain part of the route ID.
 func (r RouteID) String() string {
-	branchSlug := strings.ReplaceAll(r.Branch, "/", "-")
-	return fmt.Sprintf("%s:%s", r.Project, branchSlug)
+	return fmt.Sprintf("%s:%s", r.Project, r.Branch)
 }
 
 // RouteIDFromString parses a RouteID from its string representation
@@ -64,9 +63,10 @@ func RouteIDFromString(s string) (RouteID, error) {
 	}
 
 	project := s[:colonIdx]
-	branchSlug := s[colonIdx+1:]
-	// Convert branch slug back to branch name (replace - with /)
-	branch := strings.ReplaceAll(branchSlug, "-", "/")
+	branch := s[colonIdx+1:]
+	if !ValidProjectName(project) || !ValidBranchName(branch) {
+		return RouteID{}, fmt.Errorf("invalid route ID format: %s", s)
+	}
 
 	return RouteID{Project: project, Branch: branch}, nil
 }
@@ -76,7 +76,7 @@ type RegisterRequest struct {
 	Project string `json:"project" validate:"required"`
 	Branch  string `json:"branch"  validate:"required"`
 	Port    int    `json:"port"    validate:"required,min=1,max=65535"`
-	TTL     int    `json:"ttl"`    // Seconds, defaults to WEBPORT_DEFAULT_TTL
+	TTL     int    `json:"ttl"` // Seconds, defaults to WEBPORT_DEFAULT_TTL
 }
 
 // Validate checks if the request is valid
@@ -96,12 +96,23 @@ func (r *RegisterRequest) Validate() error {
 	if r.Port < 1 || r.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535")
 	}
+	if r.TTL < 0 {
+		return fmt.Errorf("ttl must be non-negative")
+	}
 	return nil
 }
 
 // HeartbeatRequest is the payload for POST /routes/{id}/heartbeat
 type HeartbeatRequest struct {
 	TTL int `json:"ttl"` // Optional new TTL
+}
+
+// Validate checks if the heartbeat request is valid.
+func (r *HeartbeatRequest) Validate() error {
+	if r.TTL < 0 {
+		return fmt.Errorf("ttl must be non-negative")
+	}
+	return nil
 }
 
 // RoutesList is the response for GET /routes

@@ -77,10 +77,10 @@ func TestStore_AddSetsCreatedAtForNew(t *testing.T) {
 	store := NewStore()
 
 	route := Route{
-		Project:   "myapp",
-		Branch:    "main",
-		Port:      3000,
-		Domain:    "myapp-main.example.com",
+		Project: "myapp",
+		Branch:  "main",
+		Port:    3000,
+		Domain:  "myapp-main.example.com",
 		// CreatedAt left as zero
 		ExpiresAt: time.Now().Add(time.Hour),
 	}
@@ -283,13 +283,25 @@ func TestRouteID_String(t *testing.T) {
 			name:     "branch with slash",
 			project:  "myapp",
 			branch:   "feature/auth",
-			expected: "myapp:feature-auth",
+			expected: "myapp:feature/auth",
 		},
 		{
 			name:     "branch with multiple slashes",
 			project:  "myapp",
 			branch:   "feature/auth/oauth",
-			expected: "myapp:feature-auth-oauth",
+			expected: "myapp:feature/auth/oauth",
+		},
+		{
+			name:     "branch with dash",
+			project:  "myapp",
+			branch:   "feature-auth",
+			expected: "myapp:feature-auth",
+		},
+		{
+			name:     "branch with slash and dash",
+			project:  "myapp",
+			branch:   "feature/auth-oauth",
+			expected: "myapp:feature/auth-oauth",
 		},
 		{
 			name:     "project with dash",
@@ -311,10 +323,10 @@ func TestRouteID_String(t *testing.T) {
 
 func TestRouteIDFromString(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		wantID   RouteID
-		wantErr  bool
+		name    string
+		input   string
+		wantID  RouteID
+		wantErr bool
 	}{
 		{
 			name:    "simple",
@@ -323,8 +335,14 @@ func TestRouteIDFromString(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "branch with dashes becomes slashes",
+			name:    "branch with dash",
 			input:   "myapp:feature-auth",
+			wantID:  RouteID{Project: "myapp", Branch: "feature-auth"},
+			wantErr: false,
+		},
+		{
+			name:    "branch with slash",
+			input:   "myapp:feature/auth",
 			wantID:  RouteID{Project: "myapp", Branch: "feature/auth"},
 			wantErr: false,
 		},
@@ -335,9 +353,9 @@ func TestRouteIDFromString(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "branch with multiple dashes",
-			input:   "myapp:feature-auth-oauth",
-			wantID:  RouteID{Project: "myapp", Branch: "feature/auth/oauth"},
+			name:    "branch with slash and dash",
+			input:   "myapp:feature/auth-oauth",
+			wantID:  RouteID{Project: "myapp", Branch: "feature/auth-oauth"},
 			wantErr: false,
 		},
 		{
@@ -348,6 +366,11 @@ func TestRouteIDFromString(t *testing.T) {
 		{
 			name:    "invalid - colon at start",
 			input:   ":main",
+			wantErr: true,
+		},
+		{
+			name:    "invalid - colon at end",
+			input:   "myapp:",
 			wantErr: true,
 		},
 	}
@@ -420,4 +443,3 @@ func TestValidBranchName(t *testing.T) {
 		})
 	}
 }
-

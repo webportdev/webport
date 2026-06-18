@@ -104,6 +104,15 @@ func TestTTLCheckerStop(t *testing.T) {
 	}
 }
 
+func TestTTLCheckerStopTwice(t *testing.T) {
+	store := NewStore()
+	checker := NewTTLChecker(store, 100*time.Millisecond, func(routes []Route) {})
+
+	checker.Start()
+	checker.Stop()
+	checker.Stop()
+}
+
 func TestTTLCheckerConcurrentAccess(t *testing.T) {
 	store := NewStore()
 	var mu sync.Mutex

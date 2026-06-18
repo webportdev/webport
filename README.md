@@ -310,17 +310,20 @@ GET /routes
 ### Delete a Route
 
 ```bash
-DELETE /routes/{project}-{branch}
+DELETE /routes/{project}:{branch}
 ```
 
-Example: `DELETE /routes/myapp-main`
+Examples:
 
-**Note:** Uses dash delimiter. For projects/branches containing dashes, the last dash separates project from branch.
+- `DELETE /routes/myapp:main`
+- `DELETE /routes/myapp:feature%2Fauth` for branch `feature/auth`
+
+**Note:** Route IDs use `{project}:{branch}`. URL-escape branch slashes as `%2F` when calling route-specific endpoints.
 
 ### Heartbeat (Refresh TTL)
 
 ```bash
-POST /routes/{project}-{branch}/heartbeat
+POST /routes/{project}:{branch}/heartbeat
 Content-Type: application/json
 
 {
@@ -436,10 +439,10 @@ curl -X POST http://localhost:8080/routes \
 curl http://localhost:8080/routes
 
 # Delete a route
-curl -X DELETE http://localhost:8080/routes/myapp-main
+curl -X DELETE http://localhost:8080/routes/myapp:main
 
 # Send heartbeat
-curl -X POST http://localhost:8080/routes/myapp-main/heartbeat
+curl -X POST http://localhost:8080/routes/myapp:main/heartbeat
 ```
 
 ### Go
@@ -658,7 +661,7 @@ sudo systemctl restart caddy
 Increase the TTL:
 
 ```bash
-curl -X POST http://localhost:8080/routes/myapp-main/heartbeat \
+curl -X POST http://localhost:8080/routes/myapp:main/heartbeat \
   -H "Content-Type: application/json" \
   -d '{"ttl": 3600}'
 ```

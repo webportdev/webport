@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -205,6 +206,16 @@ func TestRegisterRouteValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
+			name: "negative ttl",
+			reqBody: route.RegisterRequest{
+				Project: "myapp",
+				Branch:  "main",
+				Port:    3000,
+				TTL:     -1,
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
 			name: "valid project with dash",
 			reqBody: route.RegisterRequest{
 				Project: "my-app",
@@ -374,6 +385,35 @@ func TestDeleteRouteNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteRouteWithEscapedSlashBranch(t *testing.T) {
+	h := newTestHandlers()
+
+	h.store.Add(route.Route{
+		Project:   "myapp",
+		Branch:    "feature/auth-oauth",
+		Port:      3000,
+		Domain:    "myapp-feature-auth-oauth.example.com",
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	req := httptest.NewRequest("DELETE", "/routes/myapp:feature%2Fauth-oauth", nil)
+	w := httptest.NewRecorder()
+
+	h.deleteRoute(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("Status = %v, want %v", resp.StatusCode, http.StatusNoContent)
+	}
+
+	id := route.RouteID{Project: "myapp", Branch: "feature/auth-oauth"}
+	if _, ok := h.store.Get(id); ok {
+		t.Error("Route was not deleted from store")
+	}
+}
+
 func TestHeartbeat(t *testing.T) {
 	h := newTestHandlers()
 
@@ -407,6 +447,40 @@ func TestHeartbeat(t *testing.T) {
 	}
 
 	// Expiry should be extended (default TTL is 300s)
+	if time.Until(r.ExpiresAt) < 200*time.Second {
+		t.Errorf("Expiry not extended: %v", r.ExpiresAt)
+	}
+}
+
+func TestHeartbeatWithEscapedSlashBranch(t *testing.T) {
+	h := newTestHandlers()
+
+	h.store.Add(route.Route{
+		Project:   "myapp",
+		Branch:    "feature/auth-oauth",
+		Port:      3000,
+		Domain:    "myapp-feature-auth-oauth.example.com",
+		ExpiresAt: time.Now().Add(1 * time.Second),
+	})
+
+	req := httptest.NewRequest("POST", "/routes/myapp:feature%2Fauth-oauth/heartbeat", bytes.NewReader([]byte("{}")))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.heartbeat(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Status = %v, want %v", resp.StatusCode, http.StatusOK)
+	}
+
+	id := route.RouteID{Project: "myapp", Branch: "feature/auth-oauth"}
+	r, ok := h.store.Get(id)
+	if !ok {
+		t.Fatal("Route not found")
+	}
 	if time.Until(r.ExpiresAt) < 200*time.Second {
 		t.Errorf("Expiry not extended: %v", r.ExpiresAt)
 	}
@@ -482,6 +556,65 @@ func TestHeartbeatWithInvalidJSON(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	h.heartbeat(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("Status = %v, want %v", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestHeartbeatWithNegativeTTL(t *testing.T) {
+	h := newTestHandlers()
+
+	h.store.Add(route.Route{
+		Project:   "myapp",
+		Branch:    "main",
+		Port:      3000,
+		Domain:    "myapp-main.example.com",
+		ExpiresAt: time.Now().Add(1 * time.Second),
+	})
+
+	req := httptest.NewRequest("POST", "/routes/myapp:main/heartbeat", bytes.NewReader([]byte(`{"ttl": -1}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.heartbeat(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("Status = %v, want %v", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestRegisterRouteWithOversizedBody(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest("POST", "/routes", strings.NewReader(strings.Repeat("x", maxRequestBodyBytes+1)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.registerRoute(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("Status = %v, want %v", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestRegisterRouteWithMalformedJSON(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest("POST", "/routes", bytes.NewReader([]byte("{invalid json")))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.registerRoute(w, req)
 
 	resp := w.Result()
 	defer resp.Body.Close()
@@ -619,9 +752,21 @@ func TestParseRouteID(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name:   "branch with dashes becomes slashes",
+			name:   "branch with dash",
 			path:   "/routes/myapp:feature-auth",
+			wantID: route.RouteID{Project: "myapp", Branch: "feature-auth"},
+			wantOK: true,
+		},
+		{
+			name:   "branch with escaped slash",
+			path:   "/routes/myapp:feature%2Fauth",
 			wantID: route.RouteID{Project: "myapp", Branch: "feature/auth"},
+			wantOK: true,
+		},
+		{
+			name:   "branch with escaped slash and dash",
+			path:   "/routes/myapp:feature%2Fauth-oauth",
+			wantID: route.RouteID{Project: "myapp", Branch: "feature/auth-oauth"},
 			wantOK: true,
 		},
 		{
