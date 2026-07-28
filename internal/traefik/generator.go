@@ -4,6 +4,7 @@ package traefik
 
 import (
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,11 +17,14 @@ import (
 type Config struct {
 	EntryPoint   string
 	CertResolver string
+	CertFile     string
+	KeyFile      string
 }
 
 // RouteInfo is the minimal route information needed by Traefik.
 type RouteInfo struct {
 	Domain string
+	Host   string
 	Port   int
 }
 
@@ -34,8 +38,12 @@ func GenerateDynamicConfig(routes []RouteInfo, cfg Config, baseDomain string) (s
 	if cfg.EntryPoint == "" {
 		return "", fmt.Errorf("Traefik entrypoint is required")
 	}
-	if cfg.CertResolver == "" {
-		return "", fmt.Errorf("Traefik certificate resolver is required")
+	localCertificate := cfg.CertFile != "" || cfg.KeyFile != ""
+	if localCertificate && (cfg.CertFile == "" || cfg.KeyFile == "") {
+		return "", fmt.Errorf("both Traefik certificate and key files are required")
+	}
+	if !localCertificate && cfg.CertResolver == "" {
+		return "", fmt.Errorf("Traefik certificate resolver is required when no local certificate is configured")
 	}
 
 	sorted := append([]RouteInfo(nil), routes...)
@@ -63,20 +71,35 @@ func GenerateDynamicConfig(routes []RouteInfo, cfg Config, baseDomain string) (s
 		out.WriteString("  services:\n")
 		for _, item := range sorted {
 			name := strconv.Quote(item.Domain)
+			host := item.Host
+			if host == "" {
+				host = "127.0.0.1"
+			}
 			fmt.Fprintf(&out, "    %s:\n", name)
 			out.WriteString("      loadBalancer:\n")
 			out.WriteString("        servers:\n")
-			fmt.Fprintf(&out, "          - url: %s\n", strconv.Quote(fmt.Sprintf("http://127.0.0.1:%d", item.Port)))
+			fmt.Fprintf(&out, "          - url: %s\n", strconv.Quote("http://"+net.JoinHostPort(host, strconv.Itoa(item.Port))))
 		}
 	}
 
 	out.WriteString("tls:\n")
-	out.WriteString("  stores:\n")
-	out.WriteString("    default:\n")
-	out.WriteString("      defaultGeneratedCert:\n")
-	fmt.Fprintf(&out, "        resolver: %s\n", strconv.Quote(cfg.CertResolver))
-	out.WriteString("        domain:\n")
-	fmt.Fprintf(&out, "          main: %s\n", strconv.Quote("*."+baseDomain))
+	if localCertificate {
+		out.WriteString("  certificates:\n")
+		fmt.Fprintf(&out, "    - certFile: %s\n", strconv.Quote(cfg.CertFile))
+		fmt.Fprintf(&out, "      keyFile: %s\n", strconv.Quote(cfg.KeyFile))
+		out.WriteString("  stores:\n")
+		out.WriteString("    default:\n")
+		out.WriteString("      defaultCertificate:\n")
+		fmt.Fprintf(&out, "        certFile: %s\n", strconv.Quote(cfg.CertFile))
+		fmt.Fprintf(&out, "        keyFile: %s\n", strconv.Quote(cfg.KeyFile))
+	} else {
+		out.WriteString("  stores:\n")
+		out.WriteString("    default:\n")
+		out.WriteString("      defaultGeneratedCert:\n")
+		fmt.Fprintf(&out, "        resolver: %s\n", strconv.Quote(cfg.CertResolver))
+		out.WriteString("        domain:\n")
+		fmt.Fprintf(&out, "          main: %s\n", strconv.Quote("*."+baseDomain))
+	}
 	return out.String(), nil
 }
 
@@ -84,7 +107,7 @@ func GenerateDynamicConfig(routes []RouteInfo, cfg Config, baseDomain string) (s
 func RoutesToRouteInfos(routes []route.Route) []RouteInfo {
 	infos := make([]RouteInfo, 0, len(routes))
 	for _, item := range routes {
-		infos = append(infos, RouteInfo{Domain: item.Domain, Port: item.Port})
+		infos = append(infos, RouteInfo{Domain: item.Domain, Host: item.Host, Port: item.Port})
 	}
 	return infos
 }

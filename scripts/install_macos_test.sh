@@ -21,6 +21,21 @@ EOF
 chmod +x "$shims/launchctl"
 export PATH="$shims:$PATH"
 export LAUNCHCTL_LOG="$tmp/launchctl.log"
+export SECURITY_LOG="$tmp/security.log"
+
+cat >"$shims/security" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >>"${SECURITY_LOG:?}"
+case "${1:-}" in
+	find-certificate)
+		[[ -z "${SECURITY_EXISTING_CERT:-}" ]] || cat "$SECURITY_EXISTING_CERT"
+		[[ -n "${SECURITY_EXISTING_CERT:-}" ]] && exit 0
+		exit 1
+		;;
+esac
+EOF
+chmod +x "$shims/security"
 
 for binary in webport webportctl webport-dns; do
 	printf '#!/bin/sh\nexit 0\n' >"$artifacts/$binary"
@@ -52,6 +67,39 @@ assert_file "$root/Library/LaunchDaemons/com.webport.webport.plist"
 assert_contains "$root/usr/local/etc/webport/webport.env" "WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH=/usr/local/etc/traefik/dynamic/webport.yml"
 assert_contains "$LAUNCHCTL_LOG" "kickstart -k system/com.webport.traefik"
 assert_contains "$LAUNCHCTL_LOG" "kickstart -k system/com.webport.webport"
+
+root="$tmp/local-ca"
+WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
+	--mode full --tls-mode local-ca --base-domain webport.localhost \
+	--webport-source local --traefik-source local --artifact-dir "$artifacts" \
+	--non-interactive --yes
+assert_contains "$root/usr/local/etc/webport/webport.env" "WEBPORT_TLS_MODE=local-ca"
+assert_contains "$root/usr/local/etc/webport/webport.env" "WEBPORT_LOCAL_CA_DIR=/usr/local/etc/traefik/dynamic/webport-pki"
+if grep -Fq "certificatesResolvers:" "$root/usr/local/etc/traefik/traefik.yml"; then
+	fail "local-CA Traefik configuration contains an ACME resolver"
+fi
+
+root="$tmp/local-ca-trusted"
+mkdir -p "$root/usr/local/etc/traefik/dynamic/webport-pki"
+printf '%s\n' 'test CA' >"$root/usr/local/etc/traefik/dynamic/webport-pki/ca.crt"
+WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
+	--mode full --tls-mode local-ca --trust-local-ca \
+	--base-domain webport.localhost --webport-source local \
+	--traefik-source local --artifact-dir "$artifacts" \
+	--non-interactive --yes
+assert_contains "$SECURITY_LOG" "add-trusted-cert -d -r trustRoot"
+assert_contains "$SECURITY_LOG" "/usr/local/etc/traefik/dynamic/webport-pki/ca.crt"
+
+trusted_adds_before=$(grep -c 'add-trusted-cert' "$SECURITY_LOG")
+SECURITY_EXISTING_CERT="$root/usr/local/etc/traefik/dynamic/webport-pki/ca.crt" \
+WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
+	--mode full --tls-mode local-ca --trust-local-ca \
+	--base-domain webport.localhost --webport-source local \
+	--traefik-source local --artifact-dir "$artifacts" \
+	--non-interactive --yes
+trusted_adds_after=$(grep -c 'add-trusted-cert' "$SECURITY_LOG")
+[[ "$trusted_adds_before" == "$trusted_adds_after" ]] ||
+	fail "idempotent trust added a duplicate certificate"
 
 root="$tmp/migrate"
 mkdir -p "$root/usr/local/etc/caddy" "$root/usr/local/bin" "$root/Library/LaunchDaemons"

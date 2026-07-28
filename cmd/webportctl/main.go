@@ -179,6 +179,10 @@ func queryConfig() error {
 
 	fmt.Printf("Base Domain: %s\n", config.BaseDomain)
 	fmt.Printf("Default TTL: %d seconds\n", config.DefaultTTLSecs)
+	fmt.Printf("TLS Mode: %s\n", config.TLSMode)
+	if config.CACertPath != "" {
+		fmt.Printf("CA Certificate: %s\n", config.CACertPath)
+	}
 	return nil
 }
 

@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/webportdev/webport/internal/api"
 	"github.com/webportdev/webport/internal/config"
+	"github.com/webportdev/webport/internal/discovery"
+	"github.com/webportdev/webport/internal/localca"
 	"github.com/webportdev/webport/internal/route"
 	"github.com/webportdev/webport/internal/shutdown"
 	"github.com/webportdev/webport/internal/traefik"
@@ -23,8 +27,27 @@ func main() {
 		EntryPoint:   cfg.TraefikEntryPoint,
 		CertResolver: cfg.TraefikCertResolver,
 	}
+	var localCAEnabled bool
+	if cfg.TLSMode == config.TLSModeLocalCA {
+		paths, err := localca.Ensure(cfg.LocalCADir, cfg.BaseDomain)
+		if err != nil {
+			log.Fatalf("Failed to initialize local CA: %v", err)
+		}
+		proxyCfg.CertResolver = ""
+		proxyCfg.CertFile = paths.Cert
+		proxyCfg.KeyFile = paths.Key
+		localCAEnabled = true
+		if paths.CreatedCA {
+			log.Printf("Created local CA; trust its public certificate at %s", paths.CACert)
+		}
+		log.Printf("Local-CA TLS enabled for *.%s", cfg.BaseDomain)
+	}
 
+	var publishMu sync.Mutex
 	publishTraefikConfig := func() error {
+		publishMu.Lock()
+		defer publishMu.Unlock()
+
 		content, err := traefik.GenerateDynamicConfig(traefik.RoutesToRouteInfos(store.List()), proxyCfg, cfg.BaseDomain)
 		if err != nil {
 			return err
@@ -45,8 +68,56 @@ func main() {
 	}
 	ttlChecker.Start()
 
+	var stopLocalCARenewal func()
+	if localCAEnabled {
+		renewCtx, cancelRenewal := context.WithCancel(context.Background())
+		renewalDone := make(chan struct{})
+		stopLocalCARenewal = func() {
+			cancelRenewal()
+			<-renewalDone
+		}
+		go func() {
+			defer close(renewalDone)
+			ticker := time.NewTicker(12 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-renewCtx.Done():
+					return
+				case <-ticker.C:
+					paths, err := localca.Ensure(cfg.LocalCADir, cfg.BaseDomain)
+					if err != nil {
+						log.Printf("WARN: failed to renew local CA certificate: %v", err)
+						continue
+					}
+					if paths.CreatedCA {
+						log.Printf("WARN: local CA was replaced; clients must trust %s again", paths.CACert)
+					}
+					if paths.Changed {
+						if err := publishTraefikConfig(); err != nil {
+							log.Printf("WARN: failed to publish renewed local certificate: %v", err)
+						}
+					}
+				}
+			}
+		}()
+	}
+
+	var discoveryManager *discovery.Manager
+	if cfg.DiscoveryEnabled && discovery.Supported() {
+		discoveryManager = discovery.NewManager(discovery.Scanner{
+			BaseDomain: cfg.BaseDomain,
+		}, store, cfg.DiscoveryInterval, publishTraefikConfig)
+		discoveryManager.Start(context.Background())
+		log.Printf("Process discovery enabled (interval %s)", cfg.DiscoveryInterval)
+	} else if cfg.DiscoveryEnabled {
+		log.Printf("WARN: process discovery is not supported on this platform")
+	}
+
 	mux := http.NewServeMux()
-	api.NewHandlers(store, writer, cfg).RegisterRoutes(mux)
+	api.NewHandlers(store, writer, cfg).
+		WithPublisher(publishTraefikConfig).
+		RegisterRoutes(mux)
 	server := &http.Server{
 		Addr:              cfg.GetListenAddr(),
 		Handler:           mux,
@@ -55,6 +126,12 @@ func main() {
 
 	watchdogStop := startWatchdog()
 	shutdownManager := shutdown.NewManager(store, writer, server, ttlChecker, cfg.ShutdownTimeout, proxyCfg, cfg.BaseDomain)
+	if stopLocalCARenewal != nil {
+		shutdownManager.OnStopping(stopLocalCARenewal)
+	}
+	if discoveryManager != nil {
+		shutdownManager.OnStopping(discoveryManager.Stop)
+	}
 	shutdownManager.OnExit(func() {
 		close(watchdogStop)
 		notify(daemon.SdNotifyStopping)

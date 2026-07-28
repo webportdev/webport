@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+const (
+	SourceManual  = "manual"
+	SourceProcess = "process"
+)
+
 // validNamePattern matches valid project/branch name components
 // Must start with alphanumeric, followed by alphanumeric, dash, or underscore
 var validNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
@@ -36,9 +41,17 @@ type Route struct {
 	Project   string    `json:"project"` // e.g., "myapp"
 	Branch    string    `json:"branch"`  // e.g., "feature/auth"
 	Port      int       `json:"port"`    // e.g., 3000
-	Domain    string    `json:"domain"`  // e.g., "myapp-feature-auth.mond.boo"
+	Host      string    `json:"host,omitempty"`
+	Domain    string    `json:"domain"` // e.g., "myapp-feature-auth.mond.boo"
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"` // TTL-based expiration
+	Source    string    `json:"source,omitempty"`
+	Owner     string    `json:"owner,omitempty"`
+}
+
+// IsDiscovered reports whether a route is reconciled from a live process.
+func (r Route) IsDiscovered() bool {
+	return r.Source == SourceProcess
 }
 
 // RouteID is the composite key for routes

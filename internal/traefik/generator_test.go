@@ -44,6 +44,41 @@ func TestGenerateDynamicConfigEmpty(t *testing.T) {
 	}
 }
 
+func TestGenerateDynamicConfigIPv6Backend(t *testing.T) {
+	config, err := GenerateDynamicConfig([]RouteInfo{{
+		Domain: "app.example.com", Host: "::1", Port: 5173,
+	}}, Config{EntryPoint: "https", CertResolver: "resolver"}, "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(config, `url: "http://[::1]:5173"`) {
+		t.Fatalf("generated configuration does not contain an IPv6 backend:\n%s", config)
+	}
+}
+
+func TestGenerateDynamicConfigLocalCertificate(t *testing.T) {
+	config, err := GenerateDynamicConfig(nil, Config{
+		EntryPoint: "websecure",
+		CertFile:   "/etc/traefik/dynamic/webport-pki/wildcard.crt",
+		KeyFile:    "/etc/traefik/dynamic/webport-pki/wildcard.key",
+	}, "webport.localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`certFile: "/etc/traefik/dynamic/webport-pki/wildcard.crt"`,
+		`keyFile: "/etc/traefik/dynamic/webport-pki/wildcard.key"`,
+		"defaultCertificate:",
+	} {
+		if !strings.Contains(config, expected) {
+			t.Errorf("generated local-CA configuration does not contain %q:\n%s", expected, config)
+		}
+	}
+	if strings.Contains(config, "resolver:") || strings.Contains(config, "defaultGeneratedCert:") {
+		t.Fatalf("local-CA configuration references ACME:\n%s", config)
+	}
+}
+
 func TestGenerateDynamicConfigValidation(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -60,5 +95,11 @@ func TestGenerateDynamicConfigValidation(t *testing.T) {
 				t.Fatal("expected validation error")
 			}
 		})
+	}
+	if _, err := GenerateDynamicConfig(nil, Config{
+		EntryPoint: "websecure",
+		CertFile:   "/tmp/cert.pem",
+	}, "example.com"); err == nil {
+		t.Fatal("expected incomplete local certificate validation error")
 	}
 }

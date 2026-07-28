@@ -10,6 +10,7 @@
 package route
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -83,12 +84,108 @@ func (s *Store) DeleteExpired(now time.Time) []Route {
 
 	var expired []Route
 	for id, route := range s.routes {
+		if route.IsDiscovered() {
+			continue
+		}
 		if now.After(route.ExpiresAt) {
 			expired = append(expired, route)
 			delete(s.routes, id)
 		}
 	}
 	return expired
+}
+
+// ReconcileDiscovered atomically replaces the process-discovered portion of
+// the route set. Manual API routes always take precedence.
+func (s *Store) ReconcileDiscovered(desired []Route) (bool, []error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	next := make(map[RouteID]Route, len(desired))
+	blocked := make(map[RouteID]struct{})
+	var conflicts []error
+
+	manualDomains := make(map[string]RouteID, len(s.routes))
+	for id, existing := range s.routes {
+		if !existing.IsDiscovered() {
+			manualDomains[existing.Domain] = id
+		}
+	}
+	discoveredDomains := make(map[string]RouteID, len(desired))
+
+	for _, candidate := range desired {
+		id := RouteID{Project: candidate.Project, Branch: candidate.Branch}
+		if _, ok := blocked[id]; ok {
+			continue
+		}
+		candidate.Source = SourceProcess
+		candidate.ExpiresAt = time.Time{}
+
+		if existing, ok := s.routes[id]; ok && !existing.IsDiscovered() {
+			conflicts = append(conflicts, fmt.Errorf(
+				"discovered route %s conflicts with a manually registered route", id.String(),
+			))
+			continue
+		}
+		if owner, ok := manualDomains[candidate.Domain]; ok && owner != id {
+			conflicts = append(conflicts, fmt.Errorf(
+				"discovered domain %s conflicts with route %s", candidate.Domain, owner.String(),
+			))
+			continue
+		}
+		if owner, ok := discoveredDomains[candidate.Domain]; ok && owner != id {
+			delete(next, owner)
+			blocked[owner] = struct{}{}
+			blocked[id] = struct{}{}
+			conflicts = append(conflicts, fmt.Errorf(
+				"multiple process routes produce discovered domain %s", candidate.Domain,
+			))
+			continue
+		}
+		if existing, ok := next[id]; ok {
+			if existing.Port != candidate.Port || existing.Owner != candidate.Owner {
+				delete(next, id)
+				blocked[id] = struct{}{}
+				conflicts = append(conflicts, fmt.Errorf(
+					"multiple processes claim discovered route %s", id.String(),
+				))
+			}
+			continue
+		}
+		next[id] = candidate
+		discoveredDomains[candidate.Domain] = id
+	}
+
+	changed := false
+	for id, existing := range s.routes {
+		if !existing.IsDiscovered() {
+			continue
+		}
+		candidate, ok := next[id]
+		if !ok {
+			delete(s.routes, id)
+			changed = true
+			continue
+		}
+		if existing.Port != candidate.Port || existing.Host != candidate.Host ||
+			existing.Domain != candidate.Domain ||
+			existing.Owner != candidate.Owner {
+			candidate.CreatedAt = existing.CreatedAt
+			s.routes[id] = candidate
+			changed = true
+		}
+		delete(next, id)
+	}
+
+	for id, candidate := range next {
+		if candidate.CreatedAt.IsZero() {
+			candidate.CreatedAt = time.Now()
+		}
+		s.routes[id] = candidate
+		changed = true
+	}
+
+	return changed, conflicts
 }
 
 // Clear removes all routes and returns them (for shutdown)

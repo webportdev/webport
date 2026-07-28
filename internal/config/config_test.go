@@ -22,6 +22,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.TraefikCertResolver != "webport" {
 		t.Errorf("TraefikCertResolver = %v, want webport", cfg.TraefikCertResolver)
 	}
+	if cfg.TLSMode != TLSModeACME {
+		t.Errorf("TLSMode = %v, want acme", cfg.TLSMode)
+	}
+	if cfg.LocalCADir != "/etc/traefik/dynamic/webport-pki" {
+		t.Errorf("LocalCADir = %v", cfg.LocalCADir)
+	}
 	if cfg.Port != 8080 {
 		t.Errorf("Port = %v, want 8080", cfg.Port)
 	}
@@ -33,6 +39,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.TTLCheckInterval != 30*time.Second {
 		t.Errorf("TTLCheckInterval = %v, want 30s", cfg.TTLCheckInterval)
+	}
+	if !cfg.DiscoveryEnabled || cfg.DiscoveryInterval != 2*time.Second {
+		t.Errorf("Discovery defaults = %v/%v, want true/2s", cfg.DiscoveryEnabled, cfg.DiscoveryInterval)
 	}
 }
 
@@ -47,6 +56,10 @@ func TestLoadWithEnvVars(t *testing.T) {
 	os.Setenv("WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH", "/tmp/dynamic.yml")
 	os.Setenv("WEBPORT_TRAEFIK_ENTRYPOINT", "https")
 	os.Setenv("WEBPORT_TRAEFIK_CERT_RESOLVER", "acme")
+	os.Setenv("WEBPORT_TLS_MODE", "local-ca")
+	os.Setenv("WEBPORT_LOCAL_CA_DIR", "/tmp/webport-pki")
+	os.Setenv("WEBPORT_DISCOVERY_ENABLED", "false")
+	os.Setenv("WEBPORT_DISCOVERY_INTERVAL", "5s")
 
 	cfg := Load()
 
@@ -71,6 +84,12 @@ func TestLoadWithEnvVars(t *testing.T) {
 	if cfg.TraefikEntryPoint != "https" || cfg.TraefikCertResolver != "acme" {
 		t.Errorf("Traefik config = %q/%q", cfg.TraefikEntryPoint, cfg.TraefikCertResolver)
 	}
+	if cfg.TLSMode != TLSModeLocalCA || cfg.LocalCADir != "/tmp/webport-pki" {
+		t.Errorf("Local CA config = %q/%q", cfg.TLSMode, cfg.LocalCADir)
+	}
+	if cfg.DiscoveryEnabled || cfg.DiscoveryInterval != 5*time.Second {
+		t.Errorf("Discovery config = %v/%v, want false/5s", cfg.DiscoveryEnabled, cfg.DiscoveryInterval)
+	}
 }
 
 func TestLoadRequiredBaseDomain(t *testing.T) {
@@ -83,6 +102,18 @@ func TestLoadRequiredBaseDomain(t *testing.T) {
 		}
 	}()
 
+	Load()
+}
+
+func TestLoadRejectsInvalidTLSMode(t *testing.T) {
+	unsetEnvVars()
+	os.Setenv("WEBPORT_BASE_DOMAIN", "example.com")
+	os.Setenv("WEBPORT_TLS_MODE", "invalid")
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected invalid TLS mode to panic")
+		}
+	}()
 	Load()
 }
 
@@ -111,8 +142,12 @@ func unsetEnvVars() {
 	os.Unsetenv("WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH")
 	os.Unsetenv("WEBPORT_TRAEFIK_ENTRYPOINT")
 	os.Unsetenv("WEBPORT_TRAEFIK_CERT_RESOLVER")
+	os.Unsetenv("WEBPORT_TLS_MODE")
+	os.Unsetenv("WEBPORT_LOCAL_CA_DIR")
 	os.Unsetenv("WEBPORT_LISTEN_HOST")
 	os.Unsetenv("WEBPORT_PORT")
 	os.Unsetenv("WEBPORT_DEFAULT_TTL")
 	os.Unsetenv("WEBPORT_TTL_CHECK_INTERVAL")
+	os.Unsetenv("WEBPORT_DISCOVERY_ENABLED")
+	os.Unsetenv("WEBPORT_DISCOVERY_INTERVAL")
 }

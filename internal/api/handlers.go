@@ -19,6 +19,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,9 +32,10 @@ const maxRequestBodyBytes = 1 << 20
 
 // Handlers manages HTTP endpoints
 type Handlers struct {
-	store  *route.Store
-	writer traefik.Writer
-	cfg    *config.Config
+	store   *route.Store
+	writer  traefik.Writer
+	cfg     *config.Config
+	publish func() error
 }
 
 // NewHandlers creates new handlers
@@ -43,6 +45,13 @@ func NewHandlers(store *route.Store, writer traefik.Writer, cfg *config.Config) 
 		writer: writer,
 		cfg:    cfg,
 	}
+}
+
+// WithPublisher uses publish for configuration updates. This allows all route
+// producers to serialize snapshots through one publisher.
+func (h *Handlers) WithPublisher(publish func() error) *Handlers {
+	h.publish = publish
+	return h
 }
 
 // RegisterRoutes registers all HTTP routes
@@ -103,6 +112,7 @@ func (h *Handlers) registerRoute(w http.ResponseWriter, r *http.Request) {
 		Port:      req.Port,
 		Domain:    domain,
 		ExpiresAt: time.Now().Add(ttl),
+		Source:    route.SourceManual,
 	}
 
 	if err := h.store.Add(newRoute); err != nil {
@@ -211,6 +221,8 @@ func (h *Handlers) handleHealth(w http.ResponseWriter, r *http.Request) {
 type ConfigResponse struct {
 	BaseDomain string `json:"base_domain"`
 	DefaultTTL int    `json:"default_ttl_seconds"`
+	TLSMode    string `json:"tls_mode"`
+	CACertPath string `json:"ca_cert_path,omitempty"`
 }
 
 // handleConfig handles GET /config
@@ -223,6 +235,10 @@ func (h *Handlers) handleConfig(w http.ResponseWriter, r *http.Request) {
 	resp := ConfigResponse{
 		BaseDomain: h.cfg.BaseDomain,
 		DefaultTTL: int(h.cfg.DefaultTTL.Seconds()),
+		TLSMode:    h.cfg.TLSMode,
+	}
+	if h.cfg.TLSMode == config.TLSModeLocalCA {
+		resp.CACertPath = filepath.Join(h.cfg.LocalCADir, "ca.crt")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -233,6 +249,9 @@ func (h *Handlers) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 // publishTraefikConfig regenerates the file-provider configuration.
 func (h *Handlers) publishTraefikConfig() error {
+	if h.publish != nil {
+		return h.publish()
+	}
 	routes := h.store.List()
 	routeInfos := traefik.RoutesToRouteInfos(routes)
 	content, err := traefik.GenerateDynamicConfig(routeInfos, traefik.Config{

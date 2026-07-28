@@ -17,6 +17,12 @@ Both installers support `webport`, `traefik`, and `full` modes. Managed
 Traefik installations download the pinned official upstream binary and verify
 its published checksum. No custom proxy build or Docker image is required.
 
+Use `--tls-mode local-ca --base-domain webport.localhost` for local HTTPS
+without an ACME provider or public DNS. The generated public root certificate
+must be added to each client's trust store; on macOS,
+`--trust-local-ca` explicitly installs it in the System Keychain. See the main
+README.
+
 Traefik accepts any built-in Lego DNS provider code. Cloudflare,
 DigitalOcean, and Route53 additionally support interactive credential
 collection and wildcard A/AAAA synchronization through `webport-dns`.

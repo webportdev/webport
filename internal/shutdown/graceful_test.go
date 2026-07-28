@@ -93,6 +93,23 @@ func TestShutdownCallsOnExit(t *testing.T) {
 	}
 }
 
+func TestShutdownCallsAllOnStoppingCallbacks(t *testing.T) {
+	store := route.NewStore()
+	writer := &mockWriter{path: "/tmp/test/webport.yml"}
+	manager := NewManager(store, writer, nil, nil, 5*time.Second, traefik.Config{
+		EntryPoint: "websecure", CertResolver: "webport",
+	}, "example.com")
+
+	calls := 0
+	manager.OnStopping(func() { calls++ })
+	manager.OnStopping(func() { calls++ })
+	manager.Shutdown()
+
+	if calls != 2 {
+		t.Fatalf("OnStopping callbacks called %d times, want 2", calls)
+	}
+}
+
 func TestShutdownStopsTTLChecker(t *testing.T) {
 	store := route.NewStore()
 	writer := &mockWriter{path: "/tmp/test/webport.yml"}

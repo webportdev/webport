@@ -7,6 +7,7 @@ REPO_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
 source "$SCRIPT_DIR/versions.env"
 
 MODE=
+TLS_MODE=acme
 PROVIDER=
 BASE_DOMAIN=
 CREDENTIALS_FILE=
@@ -20,6 +21,7 @@ DNS_IPV4=
 DNS_IPV6=
 DNS_ZONE=
 CONFIGURE_DNS=0
+TRUST_LOCAL_CA=0
 NON_INTERACTIVE=0
 ASSUME_YES=0
 DRY_RUN=0
@@ -50,6 +52,8 @@ Usage: scripts/install.sh [options]
 Modes:
   --mode webport|traefik|full
 Proxy TLS:
+  --tls-mode acme|local-ca
+  --trust-local-ca            Trust the generated CA in the macOS System Keychain
   --provider LEGO_PROVIDER_CODE
   --credentials-file FILE
 Required for webport/full:
@@ -112,6 +116,7 @@ install_file() {
 while (($#)); do
 	case "$1" in
 		--mode) MODE=${2:-}; shift 2 ;;
+		--tls-mode) TLS_MODE=${2:-}; shift 2 ;;
 		--provider) PROVIDER=${2:-}; shift 2 ;;
 		--base-domain) BASE_DOMAIN=${2:-}; shift 2 ;;
 		--credentials-file) CREDENTIALS_FILE=${2:-}; shift 2 ;;
@@ -125,6 +130,7 @@ while (($#)); do
 		--dns-ipv4) DNS_IPV4=${2:-}; CONFIGURE_DNS=1; shift 2 ;;
 		--dns-ipv6) DNS_IPV6=${2:-}; CONFIGURE_DNS=1; shift 2 ;;
 		--dns-zone) DNS_ZONE=${2:-}; shift 2 ;;
+		--trust-local-ca) TRUST_LOCAL_CA=1; shift ;;
 		--non-interactive) NON_INTERACTIVE=1; shift ;;
 		--yes|-y) ASSUME_YES=1; shift ;;
 		--dry-run) DRY_RUN=1; shift ;;
@@ -144,16 +150,22 @@ prompt_value() {
 
 [[ -n "$MODE" ]] || { (( NON_INTERACTIVE )) && die "--mode is required"; prompt_value MODE "Install mode (webport/traefik/full)"; }
 [[ "$MODE" =~ ^(webport|traefik|full)$ ]] || die "invalid mode: $MODE"
+[[ "$TLS_MODE" =~ ^(acme|local-ca)$ ]] || die "invalid TLS mode: $TLS_MODE"
 [[ "$TRAEFIK_SOURCE" =~ ^(release|local)$ ]] || die "invalid Traefik source: $TRAEFIK_SOURCE"
 [[ -z "$PROVIDER" || "$PROVIDER" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "invalid Lego provider code: $PROVIDER"
 [[ -z "$BASE_DOMAIN" || "$BASE_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid base domain: $BASE_DOMAIN"
 [[ -z "$DNS_ZONE" || "$DNS_ZONE" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid DNS zone: $DNS_ZONE"
+if (( TRUST_LOCAL_CA )); then
+	[[ "$PLATFORM" == darwin ]] || die "--trust-local-ca is supported only on macOS"
+	[[ "$TLS_MODE" == local-ca ]] || die "--trust-local-ca requires --tls-mode local-ca"
+	[[ "$MODE" != traefik ]] || die "--trust-local-ca requires webport or full install mode"
+fi
 
-if [[ "$MODE" != traefik && -z "$BASE_DOMAIN" ]]; then
+if [[ ( "$MODE" != traefik || "$TLS_MODE" == local-ca ) && -z "$BASE_DOMAIN" ]]; then
 	(( NON_INTERACTIVE )) && die "--base-domain is required"
 	prompt_value BASE_DOMAIN "Base domain"
 fi
-if [[ "$MODE" != webport && -z "$PROVIDER" ]]; then
+if [[ "$TLS_MODE" == acme && "$MODE" != webport && -z "$PROVIDER" ]]; then
 	(( NON_INTERACTIVE )) && die "--provider is required"
 	prompt_value PROVIDER "Traefik Lego DNS provider code"
 fi
@@ -168,7 +180,7 @@ fi
 
 check_prerequisites() {
 	local missing=() command
-	for command in awk cp find grep install mkdir mktemp rm sed; do
+	for command in awk cp find grep install mkdir mktemp rm sed tr; do
 		command -v "$command" >/dev/null 2>&1 || missing+=("$command")
 	done
 	if [[ "$WEBPORT_SOURCE" == build && "$MODE" != traefik ]]; then
@@ -185,6 +197,10 @@ check_prerequisites() {
 	fi
 	if [[ "$PLATFORM" == darwin ]]; then
 		command -v launchctl >/dev/null 2>&1 || missing+=("launchctl")
+		[[ -x /usr/sbin/lsof ]] || missing+=("/usr/sbin/lsof")
+		if (( TRUST_LOCAL_CA )); then
+			for command in security cmp; do command -v "$command" >/dev/null 2>&1 || missing+=("$command"); done
+		fi
 	else
 		command -v systemctl >/dev/null 2>&1 || missing+=("systemctl")
 	fi
@@ -274,6 +290,7 @@ if [[ "$PLATFORM" == darwin ]]; then
 	traefik_credentials_path=/usr/local/etc/traefik/traefik.env
 	dns_credentials_path=/usr/local/etc/webport/dns.env
 	webport_config_path=/usr/local/etc/webport/webport.env
+	local_ca_path=/usr/local/etc/traefik/dynamic/webport-pki
 else
 	managed_caddy_marker=$(path /etc/caddy/.webport-managed)
 	managed_traefik_marker=$(path /etc/traefik/.webport-managed)
@@ -287,6 +304,7 @@ else
 	traefik_credentials_path=/etc/traefik/traefik.env
 	dns_credentials_path=/etc/webport/dns.env
 	webport_config_path=/etc/webport/webport.env
+	local_ca_path=/etc/traefik/dynamic/webport-pki
 fi
 migrating_caddy=0
 
@@ -325,7 +343,7 @@ normalize_migrated_credentials() {
 	CREDENTIALS_FILE=$destination
 }
 
-if [[ "$MODE" != webport || "$CONFIGURE_DNS" == 1 ]]; then
+if [[ ( "$TLS_MODE" == acme && "$MODE" != webport ) || "$CONFIGURE_DNS" == 1 ]]; then
 	[[ -n "$CREDENTIALS_FILE" ]] || { (( NON_INTERACTIVE )) && die "--credentials-file is required"; collect_interactive_credentials; }
 	BUILD_DIR=$(mktemp -d)
 	normalize_migrated_credentials "$CREDENTIALS_FILE" "$BUILD_DIR/traefik.env"
@@ -340,7 +358,7 @@ fi
 [[ -n "$BUILD_DIR" ]] || BUILD_DIR=$(mktemp -d)
 
 if (( ! ASSUME_YES && ! NON_INTERACTIVE && ! DRY_RUN )); then
-	read -r -p "Install mode '$MODE' with Traefik provider '${PROVIDER:-existing}'? [y/N] " answer
+	read -r -p "Install mode '$MODE' with TLS mode '$TLS_MODE' and Traefik provider '${PROVIDER:-none}'? [y/N] " answer
 	[[ "$answer" =~ ^[Yy]$ ]] || die "installation cancelled"
 fi
 
@@ -424,7 +442,15 @@ render_traefik_config() {
 	local output=$1
 	local template=$REPO_DIR/traefik/traefik.yml.tmpl
 	[[ "$PLATFORM" == darwin ]] && template=$REPO_DIR/macos/traefik.yml.tmpl
-	sed "s/__WEBPORT_DNS_PROVIDER__/$PROVIDER/g" "$template" >"$output"
+	if [[ "$TLS_MODE" == local-ca ]]; then
+		awk '
+			/^certificatesResolvers:/ { skipping=1; next }
+			skipping && /^ping:/ { skipping=0 }
+			!skipping { print }
+		' "$template" >"$output"
+	else
+		sed "s/__WEBPORT_DNS_PROVIDER__/$PROVIDER/g" "$template" >"$output"
+	fi
 }
 
 remove_managed_caddy() {
@@ -543,14 +569,16 @@ migrate_existing_webport() {
 	[[ -x "$installed_webport" && -f "$old_env" ]] || return 0
 	filtered="$BUILD_DIR/webport.env.migrated"
 	if [[ -r "$old_env" ]]; then
-		grep -Ev '^(WEBPORT_CADDY|WEBPORT_TLS_DNS|WEBPORT_TRAEFIK_|WEBPORT_DNS_PROVIDER=|WEBPORT_DNS_CREDENTIALS_FILE=)' "$old_env" >"$filtered" || true
+		grep -Ev '^(WEBPORT_CADDY|WEBPORT_TLS_DNS|WEBPORT_TLS_MODE=|WEBPORT_LOCAL_CA_DIR=|WEBPORT_TRAEFIK_|WEBPORT_DNS_PROVIDER=|WEBPORT_DNS_CREDENTIALS_FILE=)' "$old_env" >"$filtered" || true
 	else
-		sudo grep -Ev '^(WEBPORT_CADDY|WEBPORT_TLS_DNS|WEBPORT_TRAEFIK_|WEBPORT_DNS_PROVIDER=|WEBPORT_DNS_CREDENTIALS_FILE=)' "$old_env" >"$filtered" || true
+		sudo grep -Ev '^(WEBPORT_CADDY|WEBPORT_TLS_DNS|WEBPORT_TLS_MODE=|WEBPORT_LOCAL_CA_DIR=|WEBPORT_TRAEFIK_|WEBPORT_DNS_PROVIDER=|WEBPORT_DNS_CREDENTIALS_FILE=)' "$old_env" >"$filtered" || true
 	fi
 	content="$(<"$filtered")
 WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH=$traefik_dynamic_path
 WEBPORT_TRAEFIK_ENTRYPOINT=websecure
 WEBPORT_TRAEFIK_CERT_RESOLVER=webport
+WEBPORT_TLS_MODE=$TLS_MODE
+WEBPORT_LOCAL_CA_DIR=$local_ca_path
 WEBPORT_DNS_PROVIDER=$PROVIDER
 WEBPORT_DNS_CREDENTIALS_FILE=$traefik_credentials_path
 "
@@ -587,7 +615,11 @@ install_managed_traefik() {
 		install_file "$REPO_DIR/systemd/traefik.service" "$traefik_service" 644
 	fi
 	install_file "$config" "$(path "$traefik_config_path")" 644
-	install_file "$CREDENTIALS_FILE" "$(path "$traefik_credentials_path")" 600
+	if [[ -n "$CREDENTIALS_FILE" ]]; then
+		install_file "$CREDENTIALS_FILE" "$(path "$traefik_credentials_path")" 600
+	else
+		write_file "$(path "$traefik_credentials_path")" 600 ""
+	fi
 	install_file "$candidate" "$traefik_binary" 755
 	write_file "$managed_traefik_marker" 644 "managed-by=webport
 traefik-version=$TRAEFIK_VERSION
@@ -640,10 +672,19 @@ install_webport() {
 			credentials_path=$traefik_credentials_path
 		fi
 	fi
+	if [[ "$TLS_MODE" == local-ca ]]; then
+		privileged mkdir -p "$(path "$local_ca_path")"
+		if [[ "$ROOT" == / && "$PLATFORM" == linux && "$DRY_RUN" == 0 ]] && getent group traefik >/dev/null; then
+			privileged chown root:traefik "$local_ca_path"
+			privileged chmod 2750 "$local_ca_path"
+		fi
+	fi
 	env_content="WEBPORT_BASE_DOMAIN=$BASE_DOMAIN
 WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH=$traefik_dynamic_path
 WEBPORT_TRAEFIK_ENTRYPOINT=websecure
 WEBPORT_TRAEFIK_CERT_RESOLVER=webport
+WEBPORT_TLS_MODE=$TLS_MODE
+WEBPORT_LOCAL_CA_DIR=$local_ca_path
 WEBPORT_LISTEN_HOST=127.0.0.1
 WEBPORT_PORT=8080
 WEBPORT_DEFAULT_TTL=300s
@@ -667,10 +708,45 @@ sync_dns() {
 	privileged "$(path /usr/local/bin/webport-dns)" "${args[@]}"
 }
 
+trust_local_ca() {
+	(( TRUST_LOCAL_CA )) || return 0
+	local ca_file existing label
+	ca_file=$(path "$local_ca_path/ca.crt")
+	label="webport local development CA for $(printf '%s' "$BASE_DOMAIN" | tr '[:upper:]' '[:lower:]')"
+	existing="$BUILD_DIR/keychain-ca.crt"
+
+	if (( DRY_RUN )); then
+		log "dry-run: wait for $ca_file"
+		privileged security add-trusted-cert -d -r trustRoot \
+			-k /Library/Keychains/System.keychain "$ca_file"
+		return
+	fi
+
+	for _ in {1..40}; do
+		[[ -s "$ca_file" ]] && break
+		sleep 0.25
+	done
+	[[ -s "$ca_file" ]] || die "local CA was not generated at $ca_file; inspect webport logs"
+
+	if security find-certificate -c "$label" -p \
+		/Library/Keychains/System.keychain >"$existing" 2>/dev/null; then
+		if cmp -s "$ca_file" "$existing"; then
+			log "Local CA is already trusted in the macOS System Keychain."
+			return
+		fi
+		privileged security delete-certificate -c "$label" \
+			/Library/Keychains/System.keychain
+	fi
+	privileged security add-trusted-cert -d -r trustRoot \
+		-k /Library/Keychains/System.keychain "$ca_file"
+	log "Trusted the webport local CA in the macOS System Keychain."
+}
+
 case "$MODE" in
 	traefik) install_managed_traefik ;;
 	webport) install_webport; sync_dns ;;
 	full) install_managed_traefik; install_webport; sync_dns ;;
 esac
+trust_local_ca
 
 log "Installation complete."

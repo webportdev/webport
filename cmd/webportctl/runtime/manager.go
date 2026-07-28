@@ -230,6 +230,8 @@ func jsonReader(v any) *strings.Reader {
 type ConfigResponse struct {
 	BaseDomain     string `json:"base_domain"`
 	DefaultTTLSecs int    `json:"default_ttl_seconds"`
+	TLSMode        string `json:"tls_mode"`
+	CACertPath     string `json:"ca_cert_path"`
 }
 
 // GetConfig fetches the server configuration.

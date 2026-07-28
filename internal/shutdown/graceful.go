@@ -31,10 +31,18 @@ type Manager struct {
 	server          *http.Server
 	ttl             *route.TTLChecker
 	shutdownTimeout time.Duration
-	onExit          func() // Optional callback
+	onExit          func()   // Optional callback
+	onStopping      []func() // Optional callbacks run before route cleanup
 	mu              sync.Mutex
 	proxyCfg        traefik.Config
 	baseDomain      string
+}
+
+// OnStopping registers a callback invoked before routes are cleared.
+func (m *Manager) OnStopping(fn func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onStopping = append(m.onStopping, fn)
 }
 
 // NewManager creates a shutdown manager
@@ -73,6 +81,13 @@ func (m *Manager) Wait() {
 // Shutdown performs graceful shutdown
 func (m *Manager) Shutdown() {
 	log.Println("Starting graceful shutdown...")
+
+	m.mu.Lock()
+	onStopping := append([]func(){}, m.onStopping...)
+	m.mu.Unlock()
+	for _, stop := range onStopping {
+		stop()
+	}
 
 	// Stop TTL checker
 	if m.ttl != nil {

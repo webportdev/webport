@@ -74,6 +74,18 @@ WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
 assert_file "$root/usr/local/bin/webport"
 assert_contains "$root/etc/webport/webport.env" "WEBPORT_DNS_PROVIDER="
 
+root="$tmp/local-ca"
+WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
+	--mode full --tls-mode local-ca --base-domain webport.localhost \
+	--webport-source local --traefik-source local --artifact-dir "$artifacts" \
+	--non-interactive --yes
+assert_contains "$root/etc/webport/webport.env" "WEBPORT_TLS_MODE=local-ca"
+assert_contains "$root/etc/webport/webport.env" "WEBPORT_LOCAL_CA_DIR=/etc/traefik/dynamic/webport-pki"
+assert_file "$root/etc/traefik/traefik.env"
+if grep -Fq "certificatesResolvers:" "$root/etc/traefik/traefik.yml"; then
+	fail "local-CA Traefik configuration contains an ACME resolver"
+fi
+
 root="$tmp/generic"
 WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
 	--mode traefik --provider hetzner --credentials-file "$generic" \
@@ -146,5 +158,7 @@ assert_contains "$root/etc/systemd/system/traefik.service" "old-service"
 
 expect_failure "$INSTALLER" --mode caddy --provider cloudflare --non-interactive --yes --dry-run
 expect_failure "$INSTALLER" --mode traefik --provider cloudflare --caddy-source release --non-interactive --yes --dry-run
+expect_failure "$INSTALLER" --mode full --tls-mode local-ca --trust-local-ca \
+	--base-domain webport.localhost --non-interactive --yes --dry-run
 
 printf 'Linux installer tests passed\n'

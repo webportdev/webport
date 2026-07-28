@@ -45,6 +45,7 @@ func newTestHandlers() *Handlers {
 		TraefikDynamicConfigPath: "/tmp/test/webport.yml",
 		TraefikEntryPoint:        "websecure",
 		TraefikCertResolver:      "webport",
+		TLSMode:                  config.TLSModeACME,
 	}
 	writer := newMockWriter()
 	store := route.NewStore()
@@ -716,6 +717,27 @@ func TestConfig(t *testing.T) {
 	}
 	if got.DefaultTTL != 300 {
 		t.Errorf("DefaultTTL = %v, want 300", got.DefaultTTL)
+	}
+	if got.TLSMode != config.TLSModeACME || got.CACertPath != "" {
+		t.Errorf("TLS config = %q/%q, want acme with no CA path", got.TLSMode, got.CACertPath)
+	}
+}
+
+func TestConfigLocalCA(t *testing.T) {
+	h := newTestHandlers()
+	h.cfg.TLSMode = config.TLSModeLocalCA
+	h.cfg.LocalCADir = "/etc/traefik/dynamic/webport-pki"
+
+	req := httptest.NewRequest("GET", "/config", nil)
+	w := httptest.NewRecorder()
+	h.handleConfig(w, req)
+
+	var got ConfigResponse
+	if err := json.NewDecoder(w.Result().Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CACertPath != "/etc/traefik/dynamic/webport-pki/ca.crt" {
+		t.Errorf("CACertPath = %q", got.CACertPath)
 	}
 }
 

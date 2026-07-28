@@ -8,6 +8,7 @@ require (
 	github.com/libdns/digitalocean v0.0.0-20250606071607-dfa7af5c2e31
 	github.com/libdns/libdns v1.1.1
 	github.com/libdns/route53 v1.6.2
+	golang.org/x/sys v0.25.0
 )
 
 require (
@@ -30,6 +31,5 @@ require (
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.7 // indirect
 	golang.org/x/oauth2 v0.23.0 // indirect
-	golang.org/x/sys v0.25.0 // indirect
 	golang.org/x/time v0.6.0 // indirect
 )

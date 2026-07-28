@@ -193,6 +193,115 @@ func TestStore_DeleteExpired(t *testing.T) {
 	}
 }
 
+func TestStore_DeleteExpiredKeepsDiscoveredRoutes(t *testing.T) {
+	store := NewStore()
+	store.Add(Route{
+		Project: "app", Branch: "main", Port: 3000,
+		Domain: "app-main.example.com", Source: SourceProcess,
+	})
+
+	if expired := store.DeleteExpired(time.Now()); len(expired) != 0 {
+		t.Fatalf("expired %d discovered routes", len(expired))
+	}
+	if store.Count() != 1 {
+		t.Fatal("discovered route was removed by TTL cleanup")
+	}
+}
+
+func TestStore_ReconcileDiscoveredLifecycle(t *testing.T) {
+	store := NewStore()
+	first := Route{
+		Project: "app", Branch: "main", Host: "127.0.0.1", Port: 5173,
+		Domain: "app-main.example.com", Source: SourceProcess, Owner: "pid:10:1",
+	}
+
+	changed, conflicts := store.ReconcileDiscovered([]Route{first})
+	if !changed || len(conflicts) != 0 {
+		t.Fatalf("initial reconcile = changed %v, conflicts %v", changed, conflicts)
+	}
+	changed, conflicts = store.ReconcileDiscovered([]Route{first})
+	if changed || len(conflicts) != 0 {
+		t.Fatalf("stable reconcile = changed %v, conflicts %v", changed, conflicts)
+	}
+
+	first.Port = 5174
+	changed, conflicts = store.ReconcileDiscovered([]Route{first})
+	if !changed || len(conflicts) != 0 {
+		t.Fatalf("port update = changed %v, conflicts %v", changed, conflicts)
+	}
+	got, _ := store.Get(RouteID{Project: "app", Branch: "main"})
+	if got.Port != 5174 {
+		t.Fatalf("port = %d, want 5174", got.Port)
+	}
+
+	changed, _ = store.ReconcileDiscovered(nil)
+	if !changed || store.Count() != 0 {
+		t.Fatal("stale discovered route was not removed")
+	}
+}
+
+func TestStore_ReconcileDiscoveredDoesNotReplaceManualRoute(t *testing.T) {
+	store := NewStore()
+	store.Add(Route{
+		Project: "app", Branch: "main", Port: 3000,
+		Domain: "app-main.example.com", Source: SourceManual,
+	})
+
+	changed, conflicts := store.ReconcileDiscovered([]Route{{
+		Project: "app", Branch: "main", Port: 5173,
+		Domain: "app-main.example.com", Source: SourceProcess, Owner: "pid:10:1",
+	}})
+	if changed || len(conflicts) != 1 {
+		t.Fatalf("reconcile = changed %v, conflicts %v", changed, conflicts)
+	}
+	got, _ := store.Get(RouteID{Project: "app", Branch: "main"})
+	if got.Port != 3000 || got.IsDiscovered() {
+		t.Fatalf("manual route was replaced: %#v", got)
+	}
+}
+
+func TestStore_ReconcileDiscoveredRejectsMultipleClaimants(t *testing.T) {
+	store := NewStore()
+	base := Route{
+		Project: "app", Branch: "main", Domain: "app-main.example.com",
+		Source: SourceProcess,
+	}
+	first := base
+	first.Port = 5173
+	first.Owner = "pid:10:1"
+	second := base
+	second.Port = 5174
+	second.Owner = "pid:11:1"
+
+	changed, conflicts := store.ReconcileDiscovered([]Route{first, second})
+	if changed || len(conflicts) != 1 {
+		t.Fatalf("reconcile = changed %v, conflicts %v", changed, conflicts)
+	}
+	if store.Count() != 0 {
+		t.Fatal("ambiguous route should fail closed")
+	}
+}
+
+func TestStore_ReconcileDiscoveredRejectsDomainSlugCollision(t *testing.T) {
+	store := NewStore()
+	first := Route{
+		Project: "app", Branch: "feature/auth", Port: 5173,
+		Domain: "app-feature-auth.example.com", Source: SourceProcess, Owner: "pid:10:1",
+	}
+	second := Route{
+		Project: "app", Branch: "feature-auth", Port: 5174,
+		Domain: "app-feature-auth.example.com", Source: SourceProcess, Owner: "pid:11:1",
+	}
+
+	changed, conflicts := store.ReconcileDiscovered([]Route{first, second})
+	if changed || len(conflicts) != 1 {
+		t.Fatalf("reconcile = changed %v, conflicts %v", changed, conflicts)
+	}
+	if store.Count() != 0 {
+		t.Fatal("domain collision should fail closed for both routes")
+	}
+}
+
 func TestStore_Clear(t *testing.T) {
 	store := NewStore()
 
