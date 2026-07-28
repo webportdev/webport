@@ -1,0 +1,8 @@
+[Unit]
+Description=Webport development proxy stack
+Documentation=https://github.com/webportdev/webport
+Requires=traefik.service webport.service
+After=traefik.service webport.service
+
+[Install]
+WantedBy=multi-user.target

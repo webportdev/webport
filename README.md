@@ -76,6 +76,20 @@ Installer modes:
 - `traefik`: install only a webport-managed Traefik.
 - `full`: install both.
 
+On Linux, `webport` and `full` installations enable
+`webport-stack.target`. It manages both services as one operational unit while
+preserving their separate users, logs, health checks, and restart policies:
+
+```bash
+sudo systemctl start webport-stack.target
+sudo systemctl stop webport-stack.target
+sudo systemctl restart webport-stack.target
+sudo systemctl status webport-stack.target
+```
+
+`--mode traefik` continues to enable `traefik.service` directly when no
+existing Webport installation is being migrated.
+
 Managed Traefik supports any provider code available in its bundled Lego
 version. Unknown/generic providers require a credentials file containing the
 provider's documented environment variables.
@@ -219,7 +233,8 @@ Managed Linux paths:
 - Traefik ACME state: `/var/lib/traefik/acme.json`
 - Local CA state: `/etc/traefik/dynamic/webport-pki`
 - webport configuration: `/etc/webport/webport.env`
-- Services: `traefik.service` and `webport.service`
+- Stack lifecycle: `webport-stack.target`
+- Component services: `traefik.service` and `webport.service`
 
 Managed macOS paths:
 
@@ -467,7 +482,8 @@ asset before updating the pin.
 Linux logs and status:
 
 ```bash
-sudo systemctl status traefik webport
+sudo systemctl status webport-stack.target
+sudo systemctl status traefik.service webport.service
 sudo journalctl -u traefik -u webport -f
 curl -fsS http://127.0.0.1:8082/ping
 ```

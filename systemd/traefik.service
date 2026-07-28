@@ -3,6 +3,7 @@ Description=Webport-managed Traefik reverse proxy
 Documentation=https://doc.traefik.io/traefik/
 After=network-online.target
 Wants=network-online.target
+PartOf=webport-stack.target
 
 [Service]
 Type=simple

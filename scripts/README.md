@@ -17,6 +17,10 @@ Both installers support `webport`, `traefik`, and `full` modes. Managed
 Traefik installations download the pinned official upstream binary and verify
 its published checksum. No custom proxy build or Docker image is required.
 
+Linux `webport` and `full` installations expose
+`webport-stack.target` for starting, stopping, restarting, and inspecting the
+two component services together.
+
 Use `--tls-mode local-ca --base-domain webport.localhost` for local HTTPS
 without an ACME provider or public DNS. The generated public root certificate
 must be added to each client's trust store; on macOS,

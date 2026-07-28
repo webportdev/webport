@@ -1,7 +1,9 @@
 [Unit]
 Description=Webport Traefik Config Manager
 After=network-online.target traefik.service
-Wants=network-online.target traefik.service
+Wants=network-online.target
+Requires=traefik.service
+PartOf=webport-stack.target
 
 [Service]
 Type=notify

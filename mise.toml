@@ -143,25 +143,25 @@ fi
 
 echo "Installing systemd service..."
 "$SUDO" install -m 644 systemd/webport.service /etc/systemd/system/
+"$SUDO" install -m 644 systemd/webport-stack.target /etc/systemd/system/
 "$SUDO" install -d -m 755 /etc/webport
 "$SUDO" install -m 600 systemd/webport.env.example /etc/webport/webport.env.example
 "$SUDO" systemctl daemon-reload
 echo "Service installed. Create /etc/webport/webport.env from /etc/webport/webport.env.example, then:"
-echo "  sudo systemctl enable webport"
-echo "  sudo systemctl start webport"
+echo "  sudo systemctl enable --now webport-stack.target"
 """
 
 [tasks.enable]
-description = "Enable the webport systemd service"
-run = "systemctl enable webport.service"
+description = "Enable the webport systemd stack"
+run = "systemctl enable webport-stack.target"
 
 [tasks.start]
-description = "Start the webport systemd service"
-run = "systemctl start webport.service"
+description = "Start the webport systemd stack"
+run = "systemctl start webport-stack.target"
 
 [tasks.stop]
-description = "Stop the webport systemd service"
-run = "systemctl stop webport.service"
+description = "Stop the webport systemd stack"
+run = "systemctl stop webport-stack.target"
 
 [tasks.restart]
 description = "Restart the webport systemd service"

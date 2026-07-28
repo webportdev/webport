@@ -291,6 +291,7 @@ if [[ "$PLATFORM" == darwin ]]; then
 	dns_credentials_path=/usr/local/etc/webport/dns.env
 	webport_config_path=/usr/local/etc/webport/webport.env
 	local_ca_path=/usr/local/etc/traefik/dynamic/webport-pki
+	webport_stack_target=
 else
 	managed_caddy_marker=$(path /etc/caddy/.webport-managed)
 	managed_traefik_marker=$(path /etc/traefik/.webport-managed)
@@ -299,6 +300,7 @@ else
 	caddy_service=$(path /etc/systemd/system/caddy.service)
 	traefik_service=$(path /etc/systemd/system/traefik.service)
 	webport_service=$(path /etc/systemd/system/webport.service)
+	webport_stack_target=$(path /etc/systemd/system/webport-stack.target)
 	traefik_config_path=/etc/traefik/traefik.yml
 	traefik_dynamic_path=/etc/traefik/dynamic/webport.yml
 	traefik_credentials_path=/etc/traefik/traefik.env
@@ -307,6 +309,7 @@ else
 	local_ca_path=/etc/traefik/dynamic/webport-pki
 fi
 migrating_caddy=0
+stack_available=0
 
 if [[ "$MODE" != webport ]]; then
 	if [[ -f "$managed_caddy_marker" ]]; then
@@ -490,7 +493,11 @@ start_traefik() {
 		privileged launchctl bootstrap system "$traefik_service" &&
 			privileged launchctl kickstart -k system/com.webport.traefik
 	else
-		privileged systemctl enable --now traefik.service
+		if [[ "$MODE" == traefik && "$stack_available" == 0 ]]; then
+			privileged systemctl enable --now traefik.service
+		else
+			privileged systemctl start traefik.service
+		fi
 	fi
 }
 
@@ -558,8 +565,14 @@ start_webport() {
 		privileged launchctl bootstrap system "$webport_service"
 		privileged launchctl kickstart -k system/com.webport.webport
 	else
-		privileged systemctl enable --now webport.service
+		privileged systemctl start webport.service
 	fi
+}
+
+enable_webport_stack() {
+	[[ "$PLATFORM" == linux && "$stack_available" == 1 ]] || return 0
+	privileged systemctl enable --now webport-stack.target
+	log "Manage the stack with: sudo systemctl {start|stop|restart|status} webport-stack.target"
 }
 
 migrate_existing_webport() {
@@ -588,6 +601,8 @@ WEBPORT_DNS_CREDENTIALS_FILE=$traefik_credentials_path
 		install_file "$REPO_DIR/macos/com.webport.webport.plist" "$webport_service" 644
 	else
 		install_file "$REPO_DIR/systemd/webport.service" "$webport_service" 644
+		install_file "$REPO_DIR/systemd/webport-stack.target" "$webport_stack_target" 644
+		stack_available=1
 	fi
 	daemon_reload
 	start_webport
@@ -663,6 +678,8 @@ install_webport() {
 		install_file "$REPO_DIR/macos/com.webport.webport.plist" "$webport_service" 644
 	else
 		install_file "$REPO_DIR/systemd/webport.service" "$webport_service" 644
+		install_file "$REPO_DIR/systemd/webport-stack.target" "$webport_stack_target" 644
+		stack_available=1
 	fi
 	if [[ -n "$CREDENTIALS_FILE" ]]; then
 		if [[ "$MODE" == webport ]]; then
@@ -747,6 +764,7 @@ case "$MODE" in
 	webport) install_webport; sync_dns ;;
 	full) install_managed_traefik; install_webport; sync_dns ;;
 esac
+enable_webport_stack
 trust_local_ca
 
 log "Installation complete."
