@@ -1,7 +1,7 @@
 [Unit]
-Description=Webport Caddy Config Manager
-After=network-online.target caddy.service
-Wants=network-online.target caddy.service
+Description=Webport Traefik Config Manager
+After=network-online.target traefik.service
+Wants=network-online.target traefik.service
 
 [Service]
 Type=notify
@@ -18,7 +18,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/etc/caddy/webport.d
+ReadWritePaths=/etc/traefik/dynamic
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=webport

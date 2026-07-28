@@ -190,14 +190,13 @@ echo "Uninstalled webport and webportctl"
 """
 
 [tasks.dev]
-description = "Run webport in development mode without modifying system Caddy"
+description = "Run webport in development mode without modifying system Traefik"
 run = """
 GO="${GO:-go}"
 echo "Running in development mode..."
 WEBPORT_BASE_DOMAIN=example.com \
 WEBPORT_PORT="${WEBPORT_PORT:-8080}" \
-WEBPORT_CADDYFILE_PATH=/tmp/webport-Caddyfile \
-WEBPORT_CADDY_RELOAD_CMD="echo 'Would reload caddy'" \
+WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH=/tmp/webport-traefik.yml \
 "$GO" run ./cmd/webport
 """
 

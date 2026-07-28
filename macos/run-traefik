@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-if [[ -f /usr/local/etc/caddy/caddy.env ]]; then
+if [[ -f /usr/local/etc/traefik/traefik.env ]]; then
 	while IFS= read -r assignment || [[ -n "$assignment" ]]; do
 		[[ -z "$assignment" || "$assignment" == \#* ]] && continue
 		export "$assignment"
-	done </usr/local/etc/caddy/caddy.env
+	done </usr/local/etc/traefik/traefik.env
 fi
 
-exec /usr/local/bin/caddy run --config /usr/local/etc/caddy/Caddyfile
+exec /usr/local/bin/traefik --configFile=/usr/local/etc/traefik/traefik.yml

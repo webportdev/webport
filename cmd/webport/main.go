@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/webportdev/webport/internal/api"
-	"github.com/webportdev/webport/internal/caddy"
 	"github.com/webportdev/webport/internal/config"
 	"github.com/webportdev/webport/internal/route"
 	"github.com/webportdev/webport/internal/shutdown"
+	"github.com/webportdev/webport/internal/traefik"
 
 	"github.com/coreos/go-systemd/v22/daemon"
 )
@@ -18,27 +18,31 @@ import (
 func main() {
 	cfg := config.Load()
 	store := route.NewStore()
-	writer := caddy.NewWriter(cfg.CaddyfilePath, cfg.CaddyReloadCmd)
-	tlsCfg := caddy.TLSConfig{
-		DNSProvider:       cfg.TLS.DNSProvider,
-		DNSProviderModule: cfg.TLS.DNSProviderModule,
-		DNSTokenEnvVar:    cfg.TLS.DNSTokenEnvVar,
+	writer := traefik.NewWriter(cfg.TraefikDynamicConfigPath)
+	proxyCfg := traefik.Config{
+		EntryPoint:   cfg.TraefikEntryPoint,
+		CertResolver: cfg.TraefikCertResolver,
 	}
 
-	reloadCaddy := func() {
-		content, err := caddy.GenerateCaddyfile(caddy.RoutesToRouteInfos(store.List()), tlsCfg, cfg.BaseDomain)
+	publishTraefikConfig := func() error {
+		content, err := traefik.GenerateDynamicConfig(traefik.RoutesToRouteInfos(store.List()), proxyCfg, cfg.BaseDomain)
 		if err != nil {
-			log.Printf("ERROR: failed to generate Caddyfile: %v", err)
-			return
+			return err
 		}
 		if err := writer.Write(content); err != nil {
-			log.Printf("WARN: failed to reload Caddy: %v", err)
+			return err
 		}
+		return nil
 	}
 
 	ttlChecker := route.NewTTLChecker(store, cfg.TTLCheckInterval, func(_ []route.Route) {
-		reloadCaddy()
+		if err := publishTraefikConfig(); err != nil {
+			log.Printf("WARN: failed to publish Traefik configuration after route expiry: %v", err)
+		}
 	})
+	if err := publishTraefikConfig(); err != nil {
+		log.Fatalf("Failed to publish initial Traefik configuration: %v", err)
+	}
 	ttlChecker.Start()
 
 	mux := http.NewServeMux()
@@ -50,7 +54,7 @@ func main() {
 	}
 
 	watchdogStop := startWatchdog()
-	shutdownManager := shutdown.NewManager(store, writer, server, ttlChecker, cfg.ShutdownTimeout, tlsCfg, cfg.BaseDomain)
+	shutdownManager := shutdown.NewManager(store, writer, server, ttlChecker, cfg.ShutdownTimeout, proxyCfg, cfg.BaseDomain)
 	shutdownManager.OnExit(func() {
 		close(watchdogStop)
 		notify(daemon.SdNotifyStopping)

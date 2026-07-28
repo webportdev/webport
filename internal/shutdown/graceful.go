@@ -3,10 +3,9 @@
 // It ensures that on termination:
 //  1. The TTL checker is stopped
 //  2. All routes are cleared from the store
-//  3. An empty Caddyfile is written (removing all proxies)
-//  4. Caddy is reloaded to apply changes
-//  5. The HTTP server is shut down gracefully
-//  6. Registered exit callbacks are invoked
+//  3. An empty Traefik dynamic configuration is written
+//  4. The HTTP server is shut down gracefully
+//  5. Registered exit callbacks are invoked
 //
 // This prevents orphaned routes and ensures clean service restarts.
 package shutdown
@@ -21,25 +20,25 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/webportdev/webport/internal/caddy"
 	"github.com/webportdev/webport/internal/route"
+	"github.com/webportdev/webport/internal/traefik"
 )
 
 // Manager handles graceful shutdown
 type Manager struct {
 	store           *route.Store
-	writer          caddy.Writer
+	writer          traefik.Writer
 	server          *http.Server
 	ttl             *route.TTLChecker
 	shutdownTimeout time.Duration
 	onExit          func() // Optional callback
 	mu              sync.Mutex
-	tlsCfg          caddy.TLSConfig
+	proxyCfg        traefik.Config
 	baseDomain      string
 }
 
 // NewManager creates a shutdown manager
-func NewManager(store *route.Store, writer caddy.Writer, server *http.Server, ttl *route.TTLChecker, shutdownTimeout time.Duration, tlsCfg caddy.TLSConfig, baseDomain string) *Manager {
+func NewManager(store *route.Store, writer traefik.Writer, server *http.Server, ttl *route.TTLChecker, shutdownTimeout time.Duration, proxyCfg traefik.Config, baseDomain string) *Manager {
 	if shutdownTimeout == 0 {
 		shutdownTimeout = 5 * time.Second // default fallback
 	}
@@ -49,7 +48,7 @@ func NewManager(store *route.Store, writer caddy.Writer, server *http.Server, tt
 		server:          server,
 		ttl:             ttl,
 		shutdownTimeout: shutdownTimeout,
-		tlsCfg:          tlsCfg,
+		proxyCfg:        proxyCfg,
 		baseDomain:      baseDomain,
 	}
 }
@@ -80,19 +79,16 @@ func (m *Manager) Shutdown() {
 		m.ttl.Stop()
 	}
 
-	// Clear all routes (delete from Caddy)
+	// Clear all routes and publish an empty dynamic configuration.
 	log.Println("Clearing all routes...")
 	cleared := m.store.Clear()
-	if len(cleared) > 0 {
-		// Write empty Caddyfile
-		content, err := caddy.GenerateCaddyfile([]caddy.RouteInfo{}, m.tlsCfg, m.baseDomain)
-		if err == nil {
-			if err := m.writer.Write(content); err != nil {
-				log.Printf("WARN: failed to write empty Caddyfile: %v", err)
-			} else {
-				log.Printf("Cleared %d route(s) from Caddy", len(cleared))
-			}
-		}
+	content, err := traefik.GenerateDynamicConfig(nil, m.proxyCfg, m.baseDomain)
+	if err != nil {
+		log.Printf("WARN: failed to generate empty Traefik configuration: %v", err)
+	} else if err := m.writer.Write(content); err != nil {
+		log.Printf("WARN: failed to publish empty Traefik configuration: %v", err)
+	} else if len(cleared) > 0 {
+		log.Printf("Cleared %d route(s) from Traefik", len(cleared))
 	}
 
 	// Shutdown HTTP server
@@ -115,6 +111,6 @@ func (m *Manager) Shutdown() {
 }
 
 // SetupSignals sets up signal handling and returns a manager
-func SetupSignals(store *route.Store, writer caddy.Writer, server *http.Server, ttl *route.TTLChecker, shutdownTimeout time.Duration, tlsCfg caddy.TLSConfig, baseDomain string) *Manager {
-	return NewManager(store, writer, server, ttl, shutdownTimeout, tlsCfg, baseDomain)
+func SetupSignals(store *route.Store, writer traefik.Writer, server *http.Server, ttl *route.TTLChecker, shutdownTimeout time.Duration, proxyCfg traefik.Config, baseDomain string) *Manager {
+	return NewManager(store, writer, server, ttl, shutdownTimeout, proxyCfg, baseDomain)
 }

@@ -1,0 +1,31 @@
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+  ping:
+    address: "127.0.0.1:8082"
+
+providers:
+  file:
+    directory: /usr/local/etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  webport:
+    acme:
+      storage: /usr/local/var/lib/traefik/acme.json
+      dnsChallenge:
+        provider: __WEBPORT_DNS_PROVIDER__
+
+ping:
+  entryPoint: ping

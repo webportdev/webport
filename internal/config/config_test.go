@@ -13,8 +13,14 @@ func TestLoadDefaults(t *testing.T) {
 
 	cfg := Load()
 
-	if cfg.CaddyfilePath != "/etc/caddy/webport.d/Caddyfile" {
-		t.Errorf("CaddyfilePath = %v, want /etc/caddy/webport.d/Caddyfile", cfg.CaddyfilePath)
+	if cfg.TraefikDynamicConfigPath != "/etc/traefik/dynamic/webport.yml" {
+		t.Errorf("TraefikDynamicConfigPath = %v", cfg.TraefikDynamicConfigPath)
+	}
+	if cfg.TraefikEntryPoint != "websecure" {
+		t.Errorf("TraefikEntryPoint = %v, want websecure", cfg.TraefikEntryPoint)
+	}
+	if cfg.TraefikCertResolver != "webport" {
+		t.Errorf("TraefikCertResolver = %v, want webport", cfg.TraefikCertResolver)
 	}
 	if cfg.Port != 8080 {
 		t.Errorf("Port = %v, want 8080", cfg.Port)
@@ -28,13 +34,6 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.TTLCheckInterval != 30*time.Second {
 		t.Errorf("TTLCheckInterval = %v, want 30s", cfg.TTLCheckInterval)
 	}
-	// TLS defaults to empty (HTTP challenge)
-	if cfg.TLS.DNSProvider != "" {
-		t.Errorf("DNSProvider = %v, want empty", cfg.TLS.DNSProvider)
-	}
-	if cfg.TLS.DNSProviderModule != "" {
-		t.Errorf("DNSProviderModule = %v, want empty", cfg.TLS.DNSProviderModule)
-	}
 }
 
 func TestLoadWithEnvVars(t *testing.T) {
@@ -45,6 +44,9 @@ func TestLoadWithEnvVars(t *testing.T) {
 	os.Setenv("WEBPORT_LISTEN_HOST", "0.0.0.0")
 	os.Setenv("WEBPORT_DEFAULT_TTL", "600s")
 	os.Setenv("WEBPORT_TTL_CHECK_INTERVAL", "60s")
+	os.Setenv("WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH", "/tmp/dynamic.yml")
+	os.Setenv("WEBPORT_TRAEFIK_ENTRYPOINT", "https")
+	os.Setenv("WEBPORT_TRAEFIK_CERT_RESOLVER", "acme")
 
 	cfg := Load()
 
@@ -63,22 +65,11 @@ func TestLoadWithEnvVars(t *testing.T) {
 	if cfg.TTLCheckInterval != 60*time.Second {
 		t.Errorf("TTLCheckInterval = %v, want 60s", cfg.TTLCheckInterval)
 	}
-}
-
-func TestLoadWithTLSConfig(t *testing.T) {
-	unsetEnvVars()
-
-	os.Setenv("WEBPORT_BASE_DOMAIN", "example.com")
-	os.Setenv("WEBPORT_TLS_DNS_PROVIDER", "cloudflare")
-	os.Setenv("WEBPORT_TLS_DNS_PROVIDER_MODULE", "cloudflare")
-
-	cfg := Load()
-
-	if cfg.TLS.DNSProvider != "cloudflare" {
-		t.Errorf("DNSProvider = %v, want cloudflare", cfg.TLS.DNSProvider)
+	if cfg.TraefikDynamicConfigPath != "/tmp/dynamic.yml" {
+		t.Errorf("TraefikDynamicConfigPath = %v", cfg.TraefikDynamicConfigPath)
 	}
-	if cfg.TLS.DNSProviderModule != "cloudflare" {
-		t.Errorf("DNSProviderModule = %v, want cloudflare", cfg.TLS.DNSProviderModule)
+	if cfg.TraefikEntryPoint != "https" || cfg.TraefikCertResolver != "acme" {
+		t.Errorf("Traefik config = %q/%q", cfg.TraefikEntryPoint, cfg.TraefikCertResolver)
 	}
 }
 
@@ -117,13 +108,11 @@ func TestGetListenAddrIPv6(t *testing.T) {
 
 func unsetEnvVars() {
 	os.Unsetenv("WEBPORT_BASE_DOMAIN")
-	os.Unsetenv("WEBPORT_CADDYFILE_PATH")
+	os.Unsetenv("WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH")
+	os.Unsetenv("WEBPORT_TRAEFIK_ENTRYPOINT")
+	os.Unsetenv("WEBPORT_TRAEFIK_CERT_RESOLVER")
 	os.Unsetenv("WEBPORT_LISTEN_HOST")
 	os.Unsetenv("WEBPORT_PORT")
 	os.Unsetenv("WEBPORT_DEFAULT_TTL")
-	os.Unsetenv("WEBPORT_CADDY_RELOAD_CMD")
 	os.Unsetenv("WEBPORT_TTL_CHECK_INTERVAL")
-	os.Unsetenv("WEBPORT_TLS_DNS_PROVIDER")
-	os.Unsetenv("WEBPORT_TLS_DNS_PROVIDER_MODULE")
-	os.Unsetenv("WEBPORT_TLS_DNS_TOKEN_ENV_VAR")
 }

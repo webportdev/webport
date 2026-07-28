@@ -100,7 +100,7 @@ func applyEnvironment(opts *options) {
 		opts.credentialsPath = os.Getenv("WEBPORT_DNS_CREDENTIALS_FILE")
 	}
 	if opts.provider == "" {
-		opts.provider = os.Getenv("WEBPORT_TLS_DNS_PROVIDER")
+		opts.provider = os.Getenv("WEBPORT_DNS_PROVIDER")
 	}
 	if opts.baseDomain == "" {
 		opts.baseDomain = os.Getenv("WEBPORT_BASE_DOMAIN")
@@ -113,9 +113,9 @@ func applyEnvironment(opts *options) {
 func newProvider(name string) (dnsmanager.Provider, error) {
 	switch name {
 	case "cloudflare":
-		token := os.Getenv("CLOUDFLARE_API_TOKEN")
+		token := os.Getenv("CF_DNS_API_TOKEN")
 		if token == "" {
-			return nil, fmt.Errorf("CLOUDFLARE_API_TOKEN is required")
+			return nil, fmt.Errorf("CF_DNS_API_TOKEN is required")
 		}
 		return &cloudflare.Provider{APIToken: token}, nil
 	case "digitalocean":

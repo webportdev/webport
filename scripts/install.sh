@@ -10,26 +10,25 @@ MODE=
 PROVIDER=
 BASE_DOMAIN=
 CREDENTIALS_FILE=
-MODULE_PATH=
-PROVIDER_NAME=
-TOKEN_ENV_VAR=
-MODULE_VERSION=
 WEBPORT_SOURCE=${WEBPORT_SOURCE:-}
-CADDY_SOURCE=${CADDY_SOURCE:-}
+TRAEFIK_SOURCE=${TRAEFIK_SOURCE:-release}
 VERSION=${WEBPORT_VERSION:-}
 RELEASE_BASE_URL=${WEBPORT_RELEASE_BASE_URL:-}
-CADDY_RELEASE_VERSION=${WEBPORT_CADDY_RELEASE_VERSION:-latest}
-CADDY_RELEASE_BASE_URL=${WEBPORT_CADDY_RELEASE_BASE_URL:-}
+TRAEFIK_RELEASE_BASE_URL=${WEBPORT_TRAEFIK_RELEASE_BASE_URL:-}
 ARTIFACT_DIR=${WEBPORT_ARTIFACT_DIR:-}
 DNS_IPV4=
 DNS_IPV6=
 DNS_ZONE=
 CONFIGURE_DNS=0
-DNS_CREDENTIALS_PATH=
 NON_INTERACTIVE=0
 ASSUME_YES=0
 DRY_RUN=0
 ROOT=${WEBPORT_INSTALL_ROOT:-/}
+PLATFORM=${WEBPORT_INSTALL_PLATFORM:-linux}
+[[ "$PLATFORM" =~ ^(linux|darwin)$ ]] || {
+	printf 'error: unsupported install platform: %s\n' "$PLATFORM" >&2
+	exit 1
+}
 BUILD_DIR=
 INTERACTIVE_CREDENTIALS=
 
@@ -48,30 +47,24 @@ usage() {
 	cat <<'EOF'
 Usage: scripts/install.sh [options]
 
-Run as a regular user; the installer requests sudo only for system changes.
-
 Modes:
-  --mode webport|caddy|full
-Providers:
-  --provider cloudflare|digitalocean|route53|custom
+  --mode webport|traefik|full
+Proxy TLS:
+  --provider LEGO_PROVIDER_CODE
+  --credentials-file FILE
 Required for webport/full:
   --base-domain DOMAIN
-Automated caddy/full or DNS sync credentials:
-  --credentials-file FILE
-Custom provider:
-  --module-path PATH --provider-name NAME --token-env-var NAME
-Version overrides:
-  --caddy-version VERSION --module-version VERSION
-Binaries:
+Binary sources:
   --webport-source release|local|build
-  --caddy-source release|docker|local|build
+  --traefik-source release|local
   --version VERSION --release-base-url URL --artifact-dir DIR
-  --caddy-release-version VERSION --caddy-release-base-url URL
+  --traefik-version VERSION --traefik-release-base-url URL
 Automation:
   --dns-ipv4 ADDRESS --dns-ipv6 ADDRESS --dns-zone ZONE
   --non-interactive --yes --dry-run
 
-Secret values are never accepted as command-line arguments.
+Cloudflare uses CF_DNS_API_TOKEN. DigitalOcean uses DO_AUTH_TOKEN.
+Other Lego providers require a credentials file containing their environment variables.
 EOF
 }
 
@@ -81,9 +74,7 @@ path() { printf '%s%s' "${ROOT%/}" "$1"; }
 
 run() {
 	if (( DRY_RUN )); then
-		printf 'dry-run:'
-		printf ' %q' "$@"
-		printf '\n'
+		printf 'dry-run:'; printf ' %q' "$@"; printf '\n'
 	else
 		"$@"
 	fi
@@ -91,10 +82,7 @@ run() {
 
 privileged() {
 	if (( DRY_RUN )); then
-		printf 'dry-run:'
-		[[ "$ROOT" == / ]] && printf ' sudo'
-		printf ' %q' "$@"
-		printf '\n'
+		printf 'dry-run:'; [[ "$ROOT" == / ]] && printf ' sudo'; printf ' %q' "$@"; printf '\n'
 	elif [[ "$ROOT" == / ]]; then
 		sudo "$@"
 	else
@@ -105,23 +93,20 @@ privileged() {
 write_file() {
 	local destination=$1 mode=$2 content=$3 tmp
 	if (( DRY_RUN )); then
-		if [[ "$ROOT" == / ]]; then
-			log "dry-run: sudo write $destination (mode $mode)"
-		else
-			log "dry-run: write $destination (mode $mode)"
-		fi
+		log "dry-run: write $destination (mode $mode)"
 		return
 	fi
 	tmp=$(mktemp)
 	printf '%s' "$content" >"$tmp"
-	privileged install -D -m "$mode" "$tmp" "$destination"
+	privileged mkdir -p "$(dirname "$destination")"
+	privileged install -m "$mode" "$tmp" "$destination"
 	rm -f "$tmp"
 }
 
-ensure_file() {
-	local destination=$1 mode=$2
-	[[ -e "$destination" ]] && return
-	write_file "$destination" "$mode" ""
+install_file() {
+	local source=$1 destination=$2 mode=$3
+	privileged mkdir -p "$(dirname "$destination")"
+	privileged install -m "$mode" "$source" "$destination"
 }
 
 while (($#)); do
@@ -130,17 +115,12 @@ while (($#)); do
 		--provider) PROVIDER=${2:-}; shift 2 ;;
 		--base-domain) BASE_DOMAIN=${2:-}; shift 2 ;;
 		--credentials-file) CREDENTIALS_FILE=${2:-}; shift 2 ;;
-		--caddy-version) CADDY_VERSION=${2:-}; shift 2 ;;
-		--module-version) MODULE_VERSION=${2:-}; shift 2 ;;
-		--module-path) MODULE_PATH=${2:-}; shift 2 ;;
-		--provider-name) PROVIDER_NAME=${2:-}; shift 2 ;;
-		--token-env-var) TOKEN_ENV_VAR=${2:-}; shift 2 ;;
 		--webport-source) WEBPORT_SOURCE=${2:-}; shift 2 ;;
-		--caddy-source) CADDY_SOURCE=${2:-}; shift 2 ;;
+		--traefik-source) TRAEFIK_SOURCE=${2:-}; shift 2 ;;
 		--version) VERSION=${2:-}; shift 2 ;;
 		--release-base-url) RELEASE_BASE_URL=${2:-}; shift 2 ;;
-		--caddy-release-version) CADDY_RELEASE_VERSION=${2:-}; shift 2 ;;
-		--caddy-release-base-url) CADDY_RELEASE_BASE_URL=${2:-}; shift 2 ;;
+		--traefik-version) TRAEFIK_VERSION=${2:-}; shift 2 ;;
+		--traefik-release-base-url) TRAEFIK_RELEASE_BASE_URL=${2:-}; shift 2 ;;
 		--artifact-dir) ARTIFACT_DIR=${2:-}; shift 2 ;;
 		--dns-ipv4) DNS_IPV4=${2:-}; CONFIGURE_DNS=1; shift 2 ;;
 		--dns-ipv6) DNS_IPV6=${2:-}; CONFIGURE_DNS=1; shift 2 ;;
@@ -149,7 +129,8 @@ while (($#)); do
 		--yes|-y) ASSUME_YES=1; shift ;;
 		--dry-run) DRY_RUN=1; shift ;;
 		--help|-h) usage; exit 0 ;;
-		--*token*|--*secret*|--*credential-value*) die "secret values must be supplied interactively or through --credentials-file" ;;
+		--caddy-*|--module-*|--provider-name|--token-env-var) die "Caddy options were removed; use Traefik options" ;;
+		--*token*|--*secret*|--*credential-value*) die "secret values must be supplied through --credentials-file" ;;
 		*) die "unknown argument: $1" ;;
 	esac
 done
@@ -161,77 +142,60 @@ prompt_value() {
 	printf -v "$variable" '%s' "$value"
 }
 
-[[ -n "$MODE" ]] || { (( NON_INTERACTIVE )) && die "--mode is required with --non-interactive"; prompt_value MODE "Install mode (webport/caddy/full)"; }
-[[ "$MODE" =~ ^(webport|caddy|full)$ ]] || die "invalid mode: $MODE"
-[[ -n "$PROVIDER" ]] || { (( NON_INTERACTIVE )) && die "--provider is required with --non-interactive"; prompt_value PROVIDER "DNS provider (cloudflare/digitalocean/route53/custom)"; }
-[[ "$PROVIDER" =~ ^(cloudflare|digitalocean|route53|custom)$ ]] || die "invalid provider: $PROVIDER"
-
-if [[ "$MODE" != caddy && -z "$BASE_DOMAIN" ]]; then
-	(( NON_INTERACTIVE )) && die "--base-domain is required with --non-interactive"
-	prompt_value BASE_DOMAIN "Base domain"
-fi
+[[ -n "$MODE" ]] || { (( NON_INTERACTIVE )) && die "--mode is required"; prompt_value MODE "Install mode (webport/traefik/full)"; }
+[[ "$MODE" =~ ^(webport|traefik|full)$ ]] || die "invalid mode: $MODE"
+[[ "$TRAEFIK_SOURCE" =~ ^(release|local)$ ]] || die "invalid Traefik source: $TRAEFIK_SOURCE"
+[[ -z "$PROVIDER" || "$PROVIDER" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "invalid Lego provider code: $PROVIDER"
 [[ -z "$BASE_DOMAIN" || "$BASE_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid base domain: $BASE_DOMAIN"
 [[ -z "$DNS_ZONE" || "$DNS_ZONE" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid DNS zone: $DNS_ZONE"
 
-if [[ "$MODE" != caddy && "$NON_INTERACTIVE" == 0 && "$DRY_RUN" == 0 && "$CONFIGURE_DNS" == 0 ]]; then
-	read -r -p "Configure wildcard DNS now? [Y/n] " answer
-	if [[ ! "$answer" =~ ^[Nn]$ ]]; then
-		CONFIGURE_DNS=1
-		prompt_value DNS_IPV4 "Public IPv4 address"
-		read -r -p "Public IPv6 address (optional): " DNS_IPV6
-		read -r -p "Authoritative DNS zone override (optional): " DNS_ZONE
-	fi
+if [[ "$MODE" != traefik && -z "$BASE_DOMAIN" ]]; then
+	(( NON_INTERACTIVE )) && die "--base-domain is required"
+	prompt_value BASE_DOMAIN "Base domain"
+fi
+if [[ "$MODE" != webport && -z "$PROVIDER" ]]; then
+	(( NON_INTERACTIVE )) && die "--provider is required"
+	prompt_value PROVIDER "Traefik Lego DNS provider code"
+fi
+if (( CONFIGURE_DNS )) && [[ -z "$PROVIDER" ]]; then
+	die "--provider is required with DNS synchronization"
 fi
 
-case "$PROVIDER" in
-	cloudflare)
-		MODULE_PATH=github.com/caddy-dns/cloudflare
-		PROVIDER_NAME=cloudflare
-		TOKEN_ENV_VAR=CLOUDFLARE_API_TOKEN
-		MODULE_VERSION=${MODULE_VERSION:-$CLOUDFLARE_MODULE_VERSION}
-		;;
-	digitalocean)
-		MODULE_PATH=github.com/caddy-dns/digitalocean
-		PROVIDER_NAME=digitalocean
-		TOKEN_ENV_VAR=DO_AUTH_TOKEN
-		MODULE_VERSION=${MODULE_VERSION:-$DIGITALOCEAN_MODULE_VERSION}
-		;;
-	route53)
-		MODULE_PATH=github.com/caddy-dns/route53
-		PROVIDER_NAME=route53
-		TOKEN_ENV_VAR=
-		MODULE_VERSION=${MODULE_VERSION:-$ROUTE53_MODULE_VERSION}
-		;;
-	custom)
-		[[ -n "$MODULE_PATH" && -n "$PROVIDER_NAME" && -n "$TOKEN_ENV_VAR" ]] ||
-			die "custom provider requires --module-path, --provider-name, and --token-env-var"
-		[[ "$MODULE_PATH" =~ ^[A-Za-z0-9._~/-]+$ ]] || die "invalid custom module path"
-		[[ "$PROVIDER_NAME" =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid custom provider name"
-		[[ "$TOKEN_ENV_VAR" =~ ^[A-Z_][A-Z0-9_]*$ ]] || die "invalid custom token environment variable"
-		[[ -n "$MODULE_VERSION" ]] || die "custom provider requires --module-version"
-		;;
-	esac
-
 if [[ -z "$WEBPORT_SOURCE" ]]; then
-	if [[ "${WEBPORT_BOOTSTRAP:-0}" == 1 ]]; then
-		WEBPORT_SOURCE=local
-	else
-		WEBPORT_SOURCE=build
-	fi
+	[[ "${WEBPORT_BOOTSTRAP:-0}" == 1 ]] && WEBPORT_SOURCE=local || WEBPORT_SOURCE=build
 fi
 [[ "$WEBPORT_SOURCE" =~ ^(release|local|build)$ ]] || die "invalid webport source: $WEBPORT_SOURCE"
 
-if [[ -z "$CADDY_SOURCE" ]]; then
-	if [[ "$PROVIDER" == custom ]]; then
-		CADDY_SOURCE=docker
-	else
-		CADDY_SOURCE=release
+check_prerequisites() {
+	local missing=() command
+	for command in awk cp find grep install mkdir mktemp rm sed; do
+		command -v "$command" >/dev/null 2>&1 || missing+=("$command")
+	done
+	if [[ "$WEBPORT_SOURCE" == build && "$MODE" != traefik ]]; then
+		command -v go >/dev/null 2>&1 || missing+=("go")
 	fi
-fi
-[[ "$CADDY_SOURCE" =~ ^(release|docker|local|build)$ ]] || die "invalid Caddy source: $CADDY_SOURCE"
+	if [[ "$MODE" != webport && "$TRAEFIK_SOURCE" == release ]]; then
+		for command in curl tar; do command -v "$command" >/dev/null 2>&1 || missing+=("$command"); done
+		if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+			missing+=("sha256sum-or-shasum")
+		fi
+	fi
+	if [[ "$MODE" != webport ]]; then
+		command -v curl >/dev/null 2>&1 || missing+=("curl")
+	fi
+	if [[ "$PLATFORM" == darwin ]]; then
+		command -v launchctl >/dev/null 2>&1 || missing+=("launchctl")
+	else
+		command -v systemctl >/dev/null 2>&1 || missing+=("systemctl")
+	fi
+	if [[ "$ROOT" == / ]]; then
+		command -v sudo >/dev/null 2>&1 || missing+=("sudo")
+	fi
+	((${#missing[@]} == 0)) || die "missing required utilities: ${missing[*]}"
+}
+check_prerequisites
 
-platform_os() { printf 'linux'; }
-
+platform_os() { printf '%s' "$PLATFORM"; }
 platform_arch() {
 	case "$(uname -m)" in
 		x86_64|amd64) printf 'amd64' ;;
@@ -242,424 +206,471 @@ platform_arch() {
 
 download() {
 	local url=$1 destination=$2
-	if (( DRY_RUN )); then
-		log "dry-run: curl -fsSL -o $destination $url"
-	else
-		curl -fsSL -o "$destination" "$url"
-	fi
+	if (( DRY_RUN )); then log "dry-run: curl -fsSL -o $destination $url"; else curl -fsSL -o "$destination" "$url"; fi
 }
 
-release_version() {
-	if [[ -n "$VERSION" && "$VERSION" != latest ]]; then
-		printf '%s' "$VERSION"
-		return
+sha256_verify() {
+	local sums=$1 file=$2 expected actual
+	expected=$(grep -E "[[:space:]]\\*?$(basename "$file")$" "$sums" | awk '{print $1}' | head -n 1)
+	[[ -n "$expected" ]] || die "checksum missing for $(basename "$file")"
+	if command -v sha256sum >/dev/null 2>&1; then
+		actual=$(sha256sum "$file" | awk '{print $1}')
+	else
+		actual=$(shasum -a 256 "$file" | awk '{print $1}')
 	fi
-	[[ -n "$RELEASE_BASE_URL" ]] && die "--version is required when --release-base-url is set"
+	[[ "$actual" == "$expected" ]] || die "checksum mismatch for $(basename "$file")"
+}
+
+validate_credentials_file() {
+	local file=$1 line assignments=0
+	[[ -r "$file" ]] || die "credentials file is not readable: $file"
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		[[ -z "$line" || "$line" == \#* ]] && continue
+		[[ "$line" =~ ^[A-Z_][A-Z0-9_]*=.+$ ]] || die "credentials file must contain KEY=value lines"
+		assignments=$((assignments + 1))
+	done <"$file"
+	(( assignments > 0 )) || die "credentials file contains no assignments"
+	case "$PROVIDER" in
+		cloudflare) grep -q '^CF_DNS_API_TOKEN=' "$file" || die "Cloudflare credentials must define CF_DNS_API_TOKEN" ;;
+		digitalocean) grep -q '^DO_AUTH_TOKEN=' "$file" || die "DigitalOcean credentials must define DO_AUTH_TOKEN" ;;
+		route53) grep -Eq '^AWS_(ACCESS_KEY_ID|PROFILE|WEB_IDENTITY_TOKEN_FILE)=' "$file" || die "Route53 credentials must define AWS credentials or a profile" ;;
+	esac
+}
+
+collect_interactive_credentials() {
+	local token secret access_key
+	[[ -t 0 ]] || die "--credentials-file is required"
+	INTERACTIVE_CREDENTIALS=$(mktemp)
+	chmod 600 "$INTERACTIVE_CREDENTIALS"
+	case "$PROVIDER" in
+		cloudflare)
+			read -r -s -p "CF_DNS_API_TOKEN: " token; printf '\n'
+			printf 'CF_DNS_API_TOKEN=%s\n' "$token" >"$INTERACTIVE_CREDENTIALS"
+			;;
+		digitalocean)
+			read -r -s -p "DO_AUTH_TOKEN: " token; printf '\n'
+			printf 'DO_AUTH_TOKEN=%s\n' "$token" >"$INTERACTIVE_CREDENTIALS"
+			;;
+		route53)
+			read -r -p "AWS access key ID: " access_key
+			read -r -s -p "AWS secret access key: " secret; printf '\n'
+			printf 'AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\n' "$access_key" "$secret" >"$INTERACTIVE_CREDENTIALS"
+			;;
+		*) die "--credentials-file is required for provider $PROVIDER" ;;
+	esac
+	CREDENTIALS_FILE=$INTERACTIVE_CREDENTIALS
+}
+
+if [[ "$PLATFORM" == darwin ]]; then
+	managed_caddy_marker=$(path /usr/local/etc/caddy/.webport-managed)
+	managed_traefik_marker=$(path /usr/local/etc/traefik/.webport-managed)
+	caddy_binary=$(path /usr/local/bin/caddy)
+	traefik_binary=$(path /usr/local/bin/traefik)
+	caddy_service=$(path /Library/LaunchDaemons/com.webport.caddy.plist)
+	traefik_service=$(path /Library/LaunchDaemons/com.webport.traefik.plist)
+	webport_service=$(path /Library/LaunchDaemons/com.webport.webport.plist)
+	traefik_config_path=/usr/local/etc/traefik/traefik.yml
+	traefik_dynamic_path=/usr/local/etc/traefik/dynamic/webport.yml
+	traefik_credentials_path=/usr/local/etc/traefik/traefik.env
+	dns_credentials_path=/usr/local/etc/webport/dns.env
+	webport_config_path=/usr/local/etc/webport/webport.env
+else
+	managed_caddy_marker=$(path /etc/caddy/.webport-managed)
+	managed_traefik_marker=$(path /etc/traefik/.webport-managed)
+	caddy_binary=$(path /usr/local/bin/caddy)
+	traefik_binary=$(path /usr/local/bin/traefik)
+	caddy_service=$(path /etc/systemd/system/caddy.service)
+	traefik_service=$(path /etc/systemd/system/traefik.service)
+	webport_service=$(path /etc/systemd/system/webport.service)
+	traefik_config_path=/etc/traefik/traefik.yml
+	traefik_dynamic_path=/etc/traefik/dynamic/webport.yml
+	traefik_credentials_path=/etc/traefik/traefik.env
+	dns_credentials_path=/etc/webport/dns.env
+	webport_config_path=/etc/webport/webport.env
+fi
+migrating_caddy=0
+
+if [[ "$MODE" != webport ]]; then
+	if [[ -f "$managed_caddy_marker" ]]; then
+		migrating_caddy=1
+		local_caddy_credentials=$(path /etc/caddy/caddy.env)
+		[[ "$PLATFORM" == darwin ]] && local_caddy_credentials=$(path /usr/local/etc/caddy/caddy.env)
+		if [[ -z "$CREDENTIALS_FILE" && -f "$local_caddy_credentials" ]]; then
+			CREDENTIALS_FILE=$local_caddy_credentials
+		fi
+	elif [[ -e "$caddy_binary" || -e "$caddy_service" ]]; then
+		die "an unmanaged Caddy installation exists and conflicts with Traefik on ports 80/443"
+	fi
+	if [[ ! -f "$managed_traefik_marker" && ( -e "$traefik_binary" || -e "$traefik_service" ) ]]; then
+		die "an unmanaged Traefik installation exists; use --mode webport or remove it manually"
+	fi
+fi
+
+normalize_migrated_credentials() {
+	local source=$1 destination=$2 readable_source=$1
+	if [[ ! -r "$source" ]]; then
+		[[ "$ROOT" == / ]] || die "credentials file is not readable: $source"
+		readable_source="$BUILD_DIR/source-credentials.env"
+		sudo cat "$source" >"$readable_source"
+		chmod 600 "$readable_source"
+	fi
+	if (( migrating_caddy )) && [[ "$PROVIDER" == cloudflare ]] &&
+		grep -q '^CLOUDFLARE_API_TOKEN=' "$readable_source" &&
+		! grep -q '^CF_DNS_API_TOKEN=' "$readable_source"; then
+		sed 's/^CLOUDFLARE_API_TOKEN=/CF_DNS_API_TOKEN=/' "$readable_source" >"$destination"
+	else
+		cp "$readable_source" "$destination"
+	fi
+	chmod 600 "$destination"
+	CREDENTIALS_FILE=$destination
+}
+
+if [[ "$MODE" != webport || "$CONFIGURE_DNS" == 1 ]]; then
+	[[ -n "$CREDENTIALS_FILE" ]] || { (( NON_INTERACTIVE )) && die "--credentials-file is required"; collect_interactive_credentials; }
+	BUILD_DIR=$(mktemp -d)
+	normalize_migrated_credentials "$CREDENTIALS_FILE" "$BUILD_DIR/traefik.env"
+	validate_credentials_file "$CREDENTIALS_FILE"
+fi
+if (( CONFIGURE_DNS )) && [[ ! "$PROVIDER" =~ ^(cloudflare|digitalocean|route53)$ ]]; then
+	die "wildcard DNS synchronization supports only cloudflare, digitalocean, and route53"
+fi
+if (( CONFIGURE_DNS )) && [[ -z "$DNS_IPV4" ]]; then
+	die "DNS synchronization requires --dns-ipv4"
+fi
+[[ -n "$BUILD_DIR" ]] || BUILD_DIR=$(mktemp -d)
+
+if (( ! ASSUME_YES && ! NON_INTERACTIVE && ! DRY_RUN )); then
+	read -r -p "Install mode '$MODE' with Traefik provider '${PROVIDER:-existing}'? [y/N] " answer
+	[[ "$answer" =~ ^[Yy]$ ]] || die "installation cancelled"
+fi
+
+release_version() {
+	if [[ -n "$VERSION" && "$VERSION" != latest ]]; then printf '%s' "$VERSION"; return; fi
+	[[ -n "$RELEASE_BASE_URL" ]] && die "--version is required with --release-base-url"
 	local repo=${WEBPORT_GITHUB_REPO:-webportdev/webport} json
 	json=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest")
 	printf '%s' "$json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
 }
 
-release_base_url() {
-	if [[ -n "$RELEASE_BASE_URL" ]]; then
-		printf '%s' "${RELEASE_BASE_URL%/}"
-		return
-	fi
-	local repo=${WEBPORT_GITHUB_REPO:-webportdev/webport}
-	printf 'https://github.com/%s/releases/latest/download' "$repo"
-}
-
-caddy_release_version() {
-	printf '%s' "${CADDY_RELEASE_VERSION:-latest}"
-}
-
-caddy_release_base_url() {
-	local version=$1
-	if [[ -n "$CADDY_RELEASE_BASE_URL" ]]; then
-		printf '%s' "${CADDY_RELEASE_BASE_URL%/}"
-		return
-	fi
-	local repo=${WEBPORT_CADDY_GITHUB_REPO:-webportdev/webport-caddy}
-	if [[ "$version" == latest ]]; then
-		printf 'https://github.com/%s/releases/latest/download' "$repo"
-		return
-	fi
-	printf 'https://github.com/%s/releases/download/%s' "$repo" "$version"
-}
-
-check_prerequisites() {
-	local missing=() command
-	[[ "$(uname -s)" == Linux ]] || die "only Linux is supported"
-	for command in find install mkdir mktemp cp mv chmod grep systemctl tar; do
-		command -v "$command" >/dev/null 2>&1 || missing+=("$command")
-	done
-	if [[ "$WEBPORT_SOURCE" == build || ( "$MODE" != webport && "$CADDY_SOURCE" == build ) ]]; then
-		command -v go >/dev/null 2>&1 || missing+=("go")
-	fi
-	if [[ "$WEBPORT_SOURCE" == release || ( "$MODE" != webport && "$CADDY_SOURCE" == release ) ]]; then
-		command -v curl >/dev/null 2>&1 || missing+=("curl")
-	fi
-	if [[ "$MODE" != webport && "$CADDY_SOURCE" == docker && "$DRY_RUN" == 0 ]]; then
-		command -v docker >/dev/null 2>&1 || missing+=("docker")
-	fi
-	if [[ "$ROOT" == / ]]; then
-		command -v sudo >/dev/null 2>&1 || missing+=("sudo")
-	fi
-	if [[ "$MODE" != webport ]]; then
-		for command in getent id groupadd useradd chown; do
-			command -v "$command" >/dev/null 2>&1 || missing+=("$command")
-		done
-	fi
-	((${#missing[@]} == 0)) || die "missing required utilities: ${missing[*]}; install them with your OS package manager"
-	if [[ "$ROOT" == / ]] && (( ! DRY_RUN )) && [[ ! -d /run/systemd/system ]]; then
-		die "systemd is required and must be running"
-	fi
-}
-
-validate_credentials_file() {
-	local file=$1 line
-	local reader=(cat)
-	local grep_cmd=(grep)
-	if [[ ! -r "$file" ]]; then
-		if [[ "$ROOT" == / ]] && sudo test -r "$file"; then
-			reader=(sudo cat)
-			grep_cmd=(sudo grep)
-		else
-			die "credentials file is not readable: $file"
-		fi
-	fi
-	while IFS= read -r line || [[ -n "$line" ]]; do
-		[[ -z "$line" || "$line" == \#* || "$line" =~ ^[A-Z_][A-Z0-9_]*=.+$ ]] ||
-			die "credentials file must contain EnvironmentFile-style KEY=value lines"
-	done < <("${reader[@]}" "$file")
-	if [[ "$PROVIDER" != route53 ]]; then
-		"${grep_cmd[@]}" -q "^${TOKEN_ENV_VAR}=" "$file" || die "credentials file must define $TOKEN_ENV_VAR"
-	else
-		"${grep_cmd[@]}" -Eq '^AWS_(ACCESS_KEY_ID|PROFILE|WEB_IDENTITY_TOKEN_FILE)=' "$file" ||
-			die "Route53 credentials file must define AWS credentials or an AWS profile"
-	fi
-}
-
-collect_interactive_credentials() {
-	local token secret access_key
-	[[ -t 0 ]] || die "--credentials-file is required when stdin is not interactive"
-	INTERACTIVE_CREDENTIALS=$(mktemp)
-	chmod 600 "$INTERACTIVE_CREDENTIALS"
-	if [[ "$PROVIDER" == route53 ]]; then
-		read -r -p "AWS access key ID: " access_key
-		read -r -s -p "AWS secret access key: " secret; printf '\n'
-		printf 'AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\n' "$access_key" "$secret" >"$INTERACTIVE_CREDENTIALS"
-	else
-		read -r -s -p "$TOKEN_ENV_VAR: " token; printf '\n'
-		printf '%s=%s\n' "$TOKEN_ENV_VAR" "$token" >"$INTERACTIVE_CREDENTIALS"
-	fi
-	CREDENTIALS_FILE=$INTERACTIVE_CREDENTIALS
-}
-
-check_prerequisites
-if [[ "$MODE" != webport || "$CONFIGURE_DNS" == 1 ]]; then
-	if [[ -z "$CREDENTIALS_FILE" ]]; then
-		(( NON_INTERACTIVE )) && die "--credentials-file is required for non-interactive caddy/full installs or DNS sync"
-		collect_interactive_credentials
-	fi
-	validate_credentials_file "$CREDENTIALS_FILE"
-fi
-if [[ "$CONFIGURE_DNS" == 1 && "$PROVIDER" == custom ]]; then
-	die "automatic DNS record management does not support custom providers"
-fi
-if [[ "$CONFIGURE_DNS" == 1 && -z "$DNS_IPV4" ]]; then
-	die "DNS sync requires --dns-ipv4"
-fi
-
-if (( ! ASSUME_YES && ! NON_INTERACTIVE && ! DRY_RUN )); then
-	read -r -p "Install mode '$MODE' with provider '$PROVIDER'? [y/N] " answer
-	[[ "$answer" =~ ^[Yy]$ ]] || die "installation cancelled"
-fi
-
-managed_marker=$(path /etc/caddy/.webport-managed)
-caddy_binary=$(path /usr/local/bin/caddy)
-caddy_service=$(path /etc/systemd/system/caddy.service)
-
-check_caddy_ownership() {
-	local path_caddy=
-	if [[ "$ROOT" == / ]]; then path_caddy=$(command -v caddy 2>/dev/null || true); fi
-	if [[ ! -f "$managed_marker" && (
-		-e "$caddy_binary" ||
-		-e "$(path /usr/bin/caddy)" ||
-		-e "$(path /usr/sbin/caddy)" ||
-		-e "$caddy_service" ||
-		-e "$(path /lib/systemd/system/caddy.service)" ||
-		-e "$(path /usr/lib/systemd/system/caddy.service)" ||
-		-n "$path_caddy"
-	) ]]; then
-		die "an unmanaged Caddy binary or service exists; remove or migrate it manually before using --mode $MODE"
-	fi
-}
-
-existing_caddy() {
-	if [[ -x "$caddy_binary" ]]; then printf '%s' "$caddy_binary"; return; fi
-	if [[ -x "$(path /usr/bin/caddy)" ]]; then printf '%s' "$(path /usr/bin/caddy)"; return; fi
-	if [[ "$ROOT" == / ]]; then command -v caddy 2>/dev/null || true; fi
-}
-
-verify_module() {
-	local binary=$1
-	"$binary" list-modules | grep -Fxq "dns.providers.$PROVIDER_NAME" ||
-		die "Caddy does not contain dns.providers.$PROVIDER_NAME"
-}
-
-validate_caddyfile() {
-	local binary=$1 config=$2
-	if [[ -n "$TOKEN_ENV_VAR" ]]; then
-		env "$TOKEN_ENV_VAR=0000000000000000000000000000000000000000" "$binary" validate --config "$config"
-	else
-		"$binary" validate --config "$config"
-	fi
+webport_release_base() {
+	if [[ -n "$RELEASE_BASE_URL" ]]; then printf '%s' "${RELEASE_BASE_URL%/}"; else printf 'https://github.com/%s/releases/latest/download' "${WEBPORT_GITHUB_REPO:-webportdev/webport}"; fi
 }
 
 install_extracted_binary() {
-	local root=$1 name=$2 destination=$3 source
-	if [[ -x "$root/$name" ]]; then
-		source="$root/$name"
-	else
-		source=$(find "$root" -type f -name "$name" -perm -111 | head -n 1)
-	fi
+	local root=$1 name=$2 destination=$3 source=
+	source=$(find "$root" -type f -name "$name" -perm -u+x | head -n 1)
 	[[ -n "$source" ]] || die "artifact does not contain executable $name"
-	privileged install -D -m 755 "$source" "$destination"
-}
-
-install_webport_from_archive() {
-	local archive=$1 extract_dir="$BUILD_DIR/webport-artifact"
-	run mkdir -p "$extract_dir"
-	if (( DRY_RUN )); then
-		log "dry-run: tar -xzf $archive -C $extract_dir"
-		privileged install -D -m 755 "$extract_dir/webport" "$(path /usr/local/bin/webport)"
-		privileged install -D -m 755 "$extract_dir/webportctl" "$(path /usr/local/bin/webportctl)"
-		privileged install -D -m 755 "$extract_dir/webport-dns" "$(path /usr/local/bin/webport-dns)"
-		return
-	fi
-	if (( ! DRY_RUN )); then
-		tar -xzf "$archive" -C "$extract_dir"
-	fi
-	install_extracted_binary "$extract_dir" webport "$(path /usr/local/bin/webport)"
-	install_extracted_binary "$extract_dir" webportctl "$(path /usr/local/bin/webportctl)"
-	install_extracted_binary "$extract_dir" webport-dns "$(path /usr/local/bin/webport-dns)"
+	install_file "$source" "$destination" 755
 }
 
 install_webport_binaries() {
-	local os arch version base archive
+	local os arch version base archive extract
 	case "$WEBPORT_SOURCE" in
 		build)
-			run mkdir -p "$BUILD_DIR"
 			run go build -o "$BUILD_DIR/webport" "$REPO_DIR/cmd/webport"
 			run go build -o "$BUILD_DIR/webportctl" "$REPO_DIR/cmd/webportctl"
 			run go build -o "$BUILD_DIR/webport-dns" "$REPO_DIR/cmd/webport-dns"
-			privileged install -D -m 755 "$BUILD_DIR/webport" "$(path /usr/local/bin/webport)"
-			privileged install -D -m 755 "$BUILD_DIR/webportctl" "$(path /usr/local/bin/webportctl)"
-			privileged install -D -m 755 "$BUILD_DIR/webport-dns" "$(path /usr/local/bin/webport-dns)"
+			for name in webport webportctl webport-dns; do install_file "$BUILD_DIR/$name" "$(path /usr/local/bin/$name)" 755; done
 			;;
 		local)
 			[[ -n "$ARTIFACT_DIR" ]] || die "--artifact-dir is required with --webport-source local"
 			if [[ -x "$ARTIFACT_DIR/webport" && -x "$ARTIFACT_DIR/webportctl" && -x "$ARTIFACT_DIR/webport-dns" ]]; then
-				privileged install -D -m 755 "$ARTIFACT_DIR/webport" "$(path /usr/local/bin/webport)"
-				privileged install -D -m 755 "$ARTIFACT_DIR/webportctl" "$(path /usr/local/bin/webportctl)"
-				privileged install -D -m 755 "$ARTIFACT_DIR/webport-dns" "$(path /usr/local/bin/webport-dns)"
+				for name in webport webportctl webport-dns; do
+					install_file "$ARTIFACT_DIR/$name" "$(path /usr/local/bin/$name)" 755
+				done
 			else
-				os=$(platform_os)
-				arch=$(platform_arch)
+				os=$(platform_os); arch=$(platform_arch)
 				archive=$(find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "webport_*_${os}_${arch}.tar.gz" | head -n 1)
-				[[ -n "$archive" ]] || die "no webport artifact found in $ARTIFACT_DIR for $os/$arch"
-				install_webport_from_archive "$archive"
+				[[ -n "$archive" ]] || die "no webport artifact found for $os/$arch"
+				extract="$BUILD_DIR/webport-artifact"; mkdir -p "$extract"; tar -xzf "$archive" -C "$extract"
+				for name in webport webportctl webport-dns; do install_extracted_binary "$extract" "$name" "$(path /usr/local/bin/$name)"; done
 			fi
 			;;
 		release)
-			os=$(platform_os)
-			arch=$(platform_arch)
-			version=$(release_version)
-			[[ -n "$version" ]] || die "could not resolve latest webport release version"
-			base=$(release_base_url)
+			os=$(platform_os); arch=$(platform_arch); version=$(release_version); base=$(webport_release_base)
 			archive="$BUILD_DIR/webport_${version}_${os}_${arch}.tar.gz"
 			download "$base/$(basename "$archive")" "$archive"
-			install_webport_from_archive "$archive"
+			extract="$BUILD_DIR/webport-artifact"; run mkdir -p "$extract"
+			if (( ! DRY_RUN )); then tar -xzf "$archive" -C "$extract"; fi
+			for name in webport webportctl webport-dns; do install_extracted_binary "$extract" "$name" "$(path /usr/local/bin/$name)"; done
 			;;
 	esac
 }
 
-install_webport() {
-	local webport_env reload_binary=/usr/local/bin/caddy
-	if [[ "$MODE" == webport ]] && (( ! DRY_RUN )); then
-		local binary
-		binary=$(existing_caddy)
-		[[ -n "$binary" ]] || die "no existing Caddy binary found"
-			verify_module "$binary"
-			if [[ "$ROOT" == / ]]; then reload_binary=$binary; fi
+prepare_traefik_binary() {
+	local os arch archive sums base extract
+	case "$TRAEFIK_SOURCE" in
+		local)
+			[[ -n "$ARTIFACT_DIR" && -x "$ARTIFACT_DIR/traefik" ]] || die "--artifact-dir must contain executable traefik"
+			printf '%s' "$ARTIFACT_DIR/traefik"
+			;;
+		release)
+			os=$(platform_os); arch=$(platform_arch)
+			base=${TRAEFIK_RELEASE_BASE_URL:-https://github.com/traefik/traefik/releases/download/$TRAEFIK_VERSION}
+			archive="$BUILD_DIR/traefik_${TRAEFIK_VERSION}_${os}_${arch}.tar.gz"
+			sums="$BUILD_DIR/traefik_${TRAEFIK_VERSION}_checksums.txt"
+			download "${base%/}/$(basename "$archive")" "$archive"
+			download "${base%/}/$(basename "$sums")" "$sums"
+			if (( DRY_RUN )); then printf '%s' "$BUILD_DIR/traefik"; return; fi
+			sha256_verify "$sums" "$archive"
+			extract="$BUILD_DIR/traefik-artifact"; mkdir -p "$extract"; tar -xzf "$archive" -C "$extract"
+			[[ -x "$extract/traefik" ]] || die "Traefik archive does not contain an executable"
+			printf '%s' "$extract/traefik"
+			;;
+	esac
+}
+
+render_traefik_config() {
+	local output=$1
+	local template=$REPO_DIR/traefik/traefik.yml.tmpl
+	[[ "$PLATFORM" == darwin ]] && template=$REPO_DIR/macos/traefik.yml.tmpl
+	sed "s/__WEBPORT_DNS_PROVIDER__/$PROVIDER/g" "$template" >"$output"
+}
+
+remove_managed_caddy() {
+	privileged rm -f "$caddy_binary" "$caddy_service"
+	if [[ "$PLATFORM" == darwin ]]; then
+		privileged rm -f "$(path /usr/local/libexec/webport/run-caddy)"
+		privileged rm -rf "$(path /usr/local/etc/caddy)" "$(path /usr/local/var/lib/caddy)" "$(path /usr/local/var/log/caddy)"
+	else
+		privileged rm -rf "$(path /etc/caddy)" "$(path /var/lib/caddy)" "$(path /var/log/caddy)"
+	fi
+}
+
+daemon_reload() {
+	[[ "$PLATFORM" == darwin ]] || privileged systemctl daemon-reload
+}
+
+stop_caddy() {
+	if [[ "$PLATFORM" == darwin ]]; then
+		(( DRY_RUN )) || privileged launchctl bootout system/com.webport.caddy >/dev/null 2>&1 || true
+	else
+		privileged systemctl stop caddy.service
+	fi
+}
+
+start_caddy() {
+	if [[ "$PLATFORM" == darwin ]]; then
+		privileged launchctl bootstrap system "$caddy_service" || true
+		privileged launchctl kickstart -k system/com.webport.caddy || true
+	else
+		privileged systemctl start caddy.service || true
+	fi
+}
+
+start_traefik() {
+	if [[ "$PLATFORM" == darwin ]]; then
+		(( DRY_RUN )) || privileged launchctl bootout system/com.webport.traefik >/dev/null 2>&1 || true
+		privileged launchctl bootstrap system "$traefik_service" &&
+			privileged launchctl kickstart -k system/com.webport.traefik
+	else
+		privileged systemctl enable --now traefik.service
+	fi
+}
+
+stop_traefik() {
+	if [[ "$PLATFORM" == darwin ]]; then
+		(( DRY_RUN )) || privileged launchctl bootout system/com.webport.traefik >/dev/null 2>&1 || true
+	else
+		privileged systemctl stop traefik.service || true
+	fi
+}
+
+backup_managed_traefik() {
+	local backup_dir=$1
+	[[ -f "$managed_traefik_marker" ]] || return 1
+	mkdir -p "$backup_dir"
+	cp "$traefik_binary" "$backup_dir/traefik"
+	cp "$(path "$traefik_config_path")" "$backup_dir/traefik.yml"
+	cp "$(path "$traefik_credentials_path")" "$backup_dir/traefik.env"
+	cp "$traefik_service" "$backup_dir/service"
+	cp "$managed_traefik_marker" "$backup_dir/marker"
+	if [[ "$PLATFORM" == darwin ]]; then
+		cp "$(path /usr/local/libexec/webport/run-traefik)" "$backup_dir/run-traefik"
+	fi
+	return 0
+}
+
+rollback_traefik() {
+	local backup_dir=${1:-}
+	stop_traefik
+	if [[ -n "$backup_dir" && -d "$backup_dir" ]]; then
+		privileged install -m 755 "$backup_dir/traefik" "$traefik_binary"
+		privileged install -m 644 "$backup_dir/traefik.yml" "$(path "$traefik_config_path")"
+		privileged install -m 600 "$backup_dir/traefik.env" "$(path "$traefik_credentials_path")"
+		privileged install -m 644 "$backup_dir/service" "$traefik_service"
+		privileged install -m 644 "$backup_dir/marker" "$managed_traefik_marker"
+		if [[ "$PLATFORM" == darwin ]]; then
+			privileged install -m 755 "$backup_dir/run-traefik" "$(path /usr/local/libexec/webport/run-traefik)"
 		fi
-	install_webport_binaries
-	if [[ -n "$CREDENTIALS_FILE" ]]; then
-		if [[ "$MODE" == full ]]; then
-			DNS_CREDENTIALS_PATH=/etc/caddy/caddy.env
+		daemon_reload
+		start_traefik || true
+	else
+		privileged rm -f "$traefik_binary" "$traefik_service" "$managed_traefik_marker"
+		if [[ "$PLATFORM" == darwin ]]; then
+			privileged rm -f "$(path /usr/local/libexec/webport/run-traefik)"
+			privileged rm -rf "$(path /usr/local/etc/traefik)" "$(path /usr/local/var/lib/traefik)" "$(path /usr/local/var/log/traefik)"
 		else
-			DNS_CREDENTIALS_PATH=/etc/webport/dns.env
-			privileged install -D -m 600 "$CREDENTIALS_FILE" "$(path "$DNS_CREDENTIALS_PATH")"
+			privileged rm -rf "$(path /etc/traefik)" "$(path /var/lib/traefik)" "$(path /var/log/traefik)"
+		fi
+		daemon_reload
+	fi
+	if (( migrating_caddy )); then start_caddy; fi
+}
+
+disable_caddy() {
+	if [[ "$PLATFORM" == darwin ]]; then
+		:
+	else
+		privileged systemctl disable caddy.service || true
+	fi
+}
+
+start_webport() {
+	if [[ "$PLATFORM" == darwin ]]; then
+		(( DRY_RUN )) || privileged launchctl bootout system/com.webport.webport >/dev/null 2>&1 || true
+		privileged launchctl bootstrap system "$webport_service"
+		privileged launchctl kickstart -k system/com.webport.webport
+	else
+		privileged systemctl enable --now webport.service
+	fi
+}
+
+migrate_existing_webport() {
+	local installed_webport old_env filtered content
+	installed_webport=$(path /usr/local/bin/webport)
+	old_env=$(path "$webport_config_path")
+	[[ -x "$installed_webport" && -f "$old_env" ]] || return 0
+	filtered="$BUILD_DIR/webport.env.migrated"
+	if [[ -r "$old_env" ]]; then
+		grep -Ev '^(WEBPORT_CADDY|WEBPORT_TLS_DNS|WEBPORT_TRAEFIK_|WEBPORT_DNS_PROVIDER=|WEBPORT_DNS_CREDENTIALS_FILE=)' "$old_env" >"$filtered" || true
+	else
+		sudo grep -Ev '^(WEBPORT_CADDY|WEBPORT_TLS_DNS|WEBPORT_TRAEFIK_|WEBPORT_DNS_PROVIDER=|WEBPORT_DNS_CREDENTIALS_FILE=)' "$old_env" >"$filtered" || true
+	fi
+	content="$(<"$filtered")
+WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH=$traefik_dynamic_path
+WEBPORT_TRAEFIK_ENTRYPOINT=websecure
+WEBPORT_TRAEFIK_CERT_RESOLVER=webport
+WEBPORT_DNS_PROVIDER=$PROVIDER
+WEBPORT_DNS_CREDENTIALS_FILE=$traefik_credentials_path
+"
+	write_file "$old_env" 600 "$content"
+	if [[ "$PLATFORM" == darwin ]]; then
+		install_file "$REPO_DIR/macos/run-webport" "$(path /usr/local/libexec/webport/run-webport)" 755
+		install_file "$REPO_DIR/macos/com.webport.webport.plist" "$webport_service" 644
+	else
+		install_file "$REPO_DIR/systemd/webport.service" "$webport_service" 644
+	fi
+	daemon_reload
+	start_webport
+}
+
+install_managed_traefik() {
+	local candidate config backup_dir=
+	candidate=$(prepare_traefik_binary)
+	config="$BUILD_DIR/traefik.yml"; render_traefik_config "$config"
+	if [[ "$DRY_RUN" == 0 ]] && backup_managed_traefik "$BUILD_DIR/traefik-previous"; then
+		backup_dir=$BUILD_DIR/traefik-previous
+	fi
+	if [[ "$ROOT" == / && "$PLATFORM" == linux ]]; then
+		getent group traefik >/dev/null || privileged groupadd --system traefik
+		id -u traefik >/dev/null 2>&1 || privileged useradd --system --gid traefik --home-dir /var/lib/traefik --shell /usr/sbin/nologin traefik
+	fi
+	if [[ "$PLATFORM" == darwin ]]; then
+		privileged mkdir -p "$(path /usr/local/etc/traefik/dynamic)" "$(path /usr/local/var/lib/traefik)" "$(path /usr/local/var/log/traefik)"
+		[[ -e "$(path /usr/local/var/lib/traefik/acme.json)" ]] || write_file "$(path /usr/local/var/lib/traefik/acme.json)" 600 ""
+		install_file "$REPO_DIR/macos/run-traefik" "$(path /usr/local/libexec/webport/run-traefik)" 755
+		install_file "$REPO_DIR/macos/com.webport.traefik.plist" "$traefik_service" 644
+	else
+		privileged mkdir -p "$(path /etc/traefik/dynamic)" "$(path /var/lib/traefik)" "$(path /var/log/traefik)"
+		[[ -e "$(path /var/lib/traefik/acme.json)" ]] || write_file "$(path /var/lib/traefik/acme.json)" 600 ""
+		install_file "$REPO_DIR/systemd/traefik.service" "$traefik_service" 644
+	fi
+	install_file "$config" "$(path "$traefik_config_path")" 644
+	install_file "$CREDENTIALS_FILE" "$(path "$traefik_credentials_path")" 600
+	install_file "$candidate" "$traefik_binary" 755
+	write_file "$managed_traefik_marker" 644 "managed-by=webport
+traefik-version=$TRAEFIK_VERSION
+provider=$PROVIDER
+"
+	if [[ "$ROOT" == / && "$PLATFORM" == linux && "$DRY_RUN" == 0 ]]; then privileged chown -R traefik:traefik /var/lib/traefik /var/log/traefik; fi
+	daemon_reload
+	if (( migrating_caddy )); then stop_caddy; fi
+	if ! start_traefik; then
+		rollback_traefik "$backup_dir"
+		die "managed Traefik failed to start; restored the previous proxy"
+	fi
+	if [[ "$ROOT" == / && "$DRY_RUN" == 0 ]]; then
+		local healthy=0
+		for _ in {1..20}; do
+			if curl --noproxy '*' -fsS http://127.0.0.1:8082/ping >/dev/null 2>&1; then healthy=1; break; fi
+			sleep 0.25
+		done
+		if (( ! healthy )); then
+			rollback_traefik "$backup_dir"
+			die "managed Traefik health check failed; restored the previous proxy"
 		fi
 	fi
-	webport_env="WEBPORT_BASE_DOMAIN=$BASE_DOMAIN
-WEBPORT_CADDYFILE_PATH=/etc/caddy/webport.d/Caddyfile
-WEBPORT_CADDY_RELOAD_CMD=$reload_binary reload --config /etc/caddy/Caddyfile
+	if (( migrating_caddy )); then
+		disable_caddy
+		remove_managed_caddy
+		daemon_reload
+	fi
+	if [[ "$MODE" == traefik ]]; then migrate_existing_webport; fi
+}
+
+install_webport() {
+	local env_content credentials_path=
+	if [[ "$MODE" == webport && "$DRY_RUN" == 0 ]]; then
+		[[ -x "$traefik_binary" ]] || die "no existing Traefik binary found at /usr/local/bin/traefik"
+		"$traefik_binary" version >/dev/null || die "existing Traefik binary is not usable"
+	fi
+	install_webport_binaries
+	if [[ "$PLATFORM" == darwin ]]; then
+		install_file "$REPO_DIR/macos/run-webport" "$(path /usr/local/libexec/webport/run-webport)" 755
+		install_file "$REPO_DIR/macos/com.webport.webport.plist" "$webport_service" 644
+	else
+		install_file "$REPO_DIR/systemd/webport.service" "$webport_service" 644
+	fi
+	if [[ -n "$CREDENTIALS_FILE" ]]; then
+		if [[ "$MODE" == webport ]]; then
+			install_file "$CREDENTIALS_FILE" "$(path "$dns_credentials_path")" 600
+			credentials_path=$dns_credentials_path
+		else
+			credentials_path=$traefik_credentials_path
+		fi
+	fi
+	env_content="WEBPORT_BASE_DOMAIN=$BASE_DOMAIN
+WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH=$traefik_dynamic_path
+WEBPORT_TRAEFIK_ENTRYPOINT=websecure
+WEBPORT_TRAEFIK_CERT_RESOLVER=webport
 WEBPORT_LISTEN_HOST=127.0.0.1
-WEBPORT_TLS_DNS_PROVIDER=$PROVIDER
-WEBPORT_TLS_DNS_PROVIDER_MODULE=$PROVIDER_NAME
-WEBPORT_TLS_DNS_TOKEN_ENV_VAR=$TOKEN_ENV_VAR
-WEBPORT_DNS_CREDENTIALS_FILE=$DNS_CREDENTIALS_PATH
+WEBPORT_PORT=8080
+WEBPORT_DEFAULT_TTL=300s
+WEBPORT_TTL_CHECK_INTERVAL=30s
+WEBPORT_SHUTDOWN_TIMEOUT=5s
+WEBPORT_DNS_PROVIDER=$PROVIDER
+WEBPORT_DNS_CREDENTIALS_FILE=$credentials_path
 WEBPORT_DNS_ZONE=$DNS_ZONE
 "
-	write_file "$(path /etc/webport/webport.env)" 600 "$webport_env"
-	privileged install -D -m 644 "$REPO_DIR/systemd/webport.service" "$(path /etc/systemd/system/webport.service)"
-	if [[ "$ROOT" == / ]]; then privileged chown root:root /etc/webport/webport.env; fi
+	write_file "$(path "$webport_config_path")" 600 "$env_content"
+	privileged mkdir -p "$(dirname "$(path "$traefik_dynamic_path")")"
+	daemon_reload
+	start_webport
 }
 
 sync_dns() {
-	[[ "$CONFIGURE_DNS" == 1 ]] || return 0
-	local args=(sync --config "$(path /etc/webport/webport.env)")
-	[[ -z "$DNS_IPV4" ]] || args+=(--ipv4 "$DNS_IPV4")
+	(( CONFIGURE_DNS )) || return 0
+	local args=(sync --config "$(path "$webport_config_path")" --ipv4 "$DNS_IPV4")
 	[[ -z "$DNS_IPV6" ]] || args+=(--ipv6 "$DNS_IPV6")
 	[[ -z "$DNS_ZONE" ]] || args+=(--zone "$DNS_ZONE")
 	privileged "$(path /usr/local/bin/webport-dns)" "${args[@]}"
 }
 
-local_caddy_candidate() {
-	local os arch candidate
-	[[ -n "$ARTIFACT_DIR" ]] || die "--artifact-dir is required with --caddy-source local"
-	os=$(platform_os)
-	arch=$(platform_arch)
-	for candidate in \
-		"$ARTIFACT_DIR/caddy" \
-		"$ARTIFACT_DIR/caddy-$PROVIDER_NAME" \
-		"$ARTIFACT_DIR/caddy-$PROVIDER_NAME-$os-$arch"; do
-		if [[ -x "$candidate" ]]; then
-			printf '%s' "$candidate"
-			return
-		fi
-	done
-	die "no local Caddy binary found in $ARTIFACT_DIR for $PROVIDER_NAME"
-}
-
-prepare_caddy_candidate() {
-	local candidate=$1 validation_config directive args os arch version base asset
-	case "$CADDY_SOURCE" in
-		release)
-			os=$(platform_os)
-			arch=$(platform_arch)
-			version=$(caddy_release_version)
-			[[ -n "$version" ]] || die "could not resolve latest webport-caddy release version"
-			base=$(caddy_release_base_url "$version")
-			asset="caddy-$PROVIDER_NAME-$os-$arch"
-			download "$base/$asset" "$candidate"
-			run chmod +x "$candidate"
-			;;
-		build)
-			run mkdir -p "$BUILD_DIR/bin"
-			if (( ! DRY_RUN )); then
-				GOBIN="$BUILD_DIR/bin" go install "github.com/caddyserver/xcaddy/cmd/xcaddy@$XCADDY_VERSION"
-				"$BUILD_DIR/bin/xcaddy" build "$CADDY_VERSION" --with "$MODULE_PATH@$MODULE_VERSION" --output "$candidate"
-			fi
-			;;
-		docker)
-			args=(--provider "$PROVIDER" --caddy-version "$CADDY_VERSION" --module-version "$MODULE_VERSION" --output "$candidate")
-			if [[ "$PROVIDER" == custom ]]; then
-				args+=(--module-path "$MODULE_PATH" --provider-name "$PROVIDER_NAME" --token-env-var "$TOKEN_ENV_VAR")
-			fi
-			(( DRY_RUN )) && args+=(--dry-run)
-			"$REPO_DIR/scripts/build-caddy-docker.sh" "${args[@]}"
-			;;
-		local)
-			candidate=$(local_caddy_candidate)
-			printf '%s' "$candidate" >"$BUILD_DIR/caddy.local"
-			return
-			;;
-	esac
-	if (( ! DRY_RUN )); then
-		verify_module "$candidate"
-		if [[ -n "$TOKEN_ENV_VAR" ]]; then
-			directive="dns $PROVIDER_NAME {env.$TOKEN_ENV_VAR}"
-		else
-			directive="dns $PROVIDER_NAME"
-		fi
-		validation_config="$BUILD_DIR/Caddyfile"
-		printf 'example.invalid {\n tls {\n  %s\n }\n}\n' "$directive" >"$validation_config"
-		validate_caddyfile "$candidate" "$validation_config"
-	fi
-}
-
-install_managed_caddy() {
-	local candidate backup had_previous=0
-	check_caddy_ownership
-	candidate="$BUILD_DIR/caddy"
-	prepare_caddy_candidate "$candidate"
-	if [[ "$CADDY_SOURCE" == local ]]; then
-		candidate=$(cat "$BUILD_DIR/caddy.local")
-		if (( ! DRY_RUN )); then
-			verify_module "$candidate"
-			if [[ -n "$TOKEN_ENV_VAR" ]]; then
-				directive="dns $PROVIDER_NAME {env.$TOKEN_ENV_VAR}"
-			else
-				directive="dns $PROVIDER_NAME"
-			fi
-			validation_config="$BUILD_DIR/Caddyfile"
-			printf 'example.invalid {\n tls {\n  %s\n }\n}\n' "$directive" >"$validation_config"
-			validate_caddyfile "$candidate" "$validation_config"
-		fi
-	fi
-
-	privileged mkdir -p "$(path /etc/caddy/webport.d)" "$(path /var/lib/caddy)" "$(path /var/log/caddy)"
-	ensure_file "$(path /etc/caddy/webport.d/Caddyfile)" 644
-	if [[ "$ROOT" == / ]]; then
-		getent group caddy >/dev/null || privileged groupadd --system caddy
-		id -u caddy >/dev/null 2>&1 || privileged useradd --system --gid caddy --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy
-	fi
-	privileged install -D -m 644 "$REPO_DIR/caddy/Caddyfile" "$(path /etc/caddy/Caddyfile)"
-	privileged install -D -m 644 "$REPO_DIR/systemd/caddy.service" "$caddy_service"
-	privileged install -D -m 600 "$CREDENTIALS_FILE" "$(path /etc/caddy/caddy.env)"
-	if [[ "$ROOT" == / ]]; then
-		privileged chown root:root /etc/caddy/caddy.env
-		privileged chown -R caddy:caddy /var/lib/caddy /var/log/caddy
-	fi
-	if (( ! DRY_RUN )) && [[ "$ROOT" == / ]]; then
-		validate_caddyfile "$candidate" /etc/caddy/Caddyfile
-	fi
-	backup="$BUILD_DIR/caddy.previous"
-	if [[ -e "$caddy_binary" ]] && (( ! DRY_RUN )); then
-		cp "$caddy_binary" "$backup"
-		had_previous=1
-	fi
-	privileged systemctl daemon-reload
-	privileged systemctl stop caddy.service
-	privileged install -D -m 755 "$candidate" "$caddy_binary"
-	if (( ! DRY_RUN )) && ! privileged systemctl enable --now caddy.service; then
-		if (( had_previous )); then privileged install -m 755 "$backup" "$caddy_binary"; fi
-		privileged systemctl restart caddy.service || true
-		die "managed Caddy failed to start; restored the previous managed binary"
-	fi
-	if (( DRY_RUN )); then
-		privileged systemctl enable --now caddy.service
-	fi
-	write_file "$managed_marker" 644 "managed-by=webport
-caddy-version=$CADDY_VERSION
-module=$MODULE_PATH@$MODULE_VERSION
-"
-}
-
-BUILD_DIR=$(mktemp -d)
-
 case "$MODE" in
-	webport) install_webport ;;
-	caddy) install_managed_caddy ;;
-	full) install_managed_caddy; install_webport ;;
+	traefik) install_managed_traefik ;;
+	webport) install_webport; sync_dns ;;
+	full) install_managed_traefik; install_webport; sync_dns ;;
 esac
 
-if [[ "$MODE" != caddy ]]; then
-	sync_dns
-	privileged systemctl daemon-reload
-	privileged systemctl enable --now webport.service
-fi
 log "Installation complete."

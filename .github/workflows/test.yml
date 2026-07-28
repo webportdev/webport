@@ -20,7 +20,22 @@ jobs:
       - run: go vet ./...
       - run: ./scripts/install_test.sh
       - run: ./scripts/install_macos_test.sh
-      - run: python3 -c "import pathlib, plistlib; [plistlib.load(path.open('rb')) for path in map(pathlib.Path, ['macos/com.webport.caddy.plist', 'macos/com.webport.webport.plist'])]"
+      - run: python3 -c "import pathlib, plistlib; [plistlib.load(path.open('rb')) for path in map(pathlib.Path, ['macos/com.webport.traefik.plist', 'macos/com.webport.webport.plist'])]"
+      - name: Test real Traefik file-provider updates
+        shell: bash
+        run: |
+          set -euo pipefail
+          source scripts/versions.env
+          base="https://github.com/traefik/traefik/releases/download/$TRAEFIK_VERSION"
+          curl -fsSL -o /tmp/traefik.tar.gz "$base/traefik_${TRAEFIK_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o /tmp/traefik-checksums.txt "$base/traefik_${TRAEFIK_VERSION}_checksums.txt"
+          expected=$(grep " traefik_${TRAEFIK_VERSION}_linux_amd64.tar.gz$" /tmp/traefik-checksums.txt | awk '{print $1}')
+          actual=$(sha256sum /tmp/traefik.tar.gz | awk '{print $1}')
+          test -n "$expected"
+          test "$actual" = "$expected"
+          mkdir -p /tmp/traefik-bin
+          tar -xzf /tmp/traefik.tar.gz -C /tmp/traefik-bin
+          TRAEFIK_BIN=/tmp/traefik-bin/traefik ./scripts/traefik_integration_test.sh
       - name: Cross-build supported targets
         shell: bash
         run: |

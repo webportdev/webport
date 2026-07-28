@@ -22,9 +22,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/webportdev/webport/internal/caddy"
 	"github.com/webportdev/webport/internal/config"
 	"github.com/webportdev/webport/internal/route"
+	"github.com/webportdev/webport/internal/traefik"
 )
 
 const maxRequestBodyBytes = 1 << 20
@@ -32,12 +32,12 @@ const maxRequestBodyBytes = 1 << 20
 // Handlers manages HTTP endpoints
 type Handlers struct {
 	store  *route.Store
-	writer caddy.Writer
+	writer traefik.Writer
 	cfg    *config.Config
 }
 
 // NewHandlers creates new handlers
-func NewHandlers(store *route.Store, writer caddy.Writer, cfg *config.Config) *Handlers {
+func NewHandlers(store *route.Store, writer traefik.Writer, cfg *config.Config) *Handlers {
 	return &Handlers{
 		store:  store,
 		writer: writer,
@@ -95,7 +95,7 @@ func (h *Handlers) registerRoute(w http.ResponseWriter, r *http.Request) {
 		ttl = time.Duration(req.TTL) * time.Second
 	}
 
-	domain := caddy.BuildDomain(h.cfg.BaseDomain, req.Project, req.Branch)
+	domain := route.BuildDomain(h.cfg.BaseDomain, req.Project, req.Branch)
 
 	newRoute := route.Route{
 		Project:   req.Project,
@@ -111,8 +111,8 @@ func (h *Handlers) registerRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.reloadCaddy(); err != nil {
-		log.Printf("WARN: failed to reload caddy: %v", err)
+	if err := h.publishTraefikConfig(); err != nil {
+		log.Printf("WARN: failed to publish Traefik configuration: %v", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -148,8 +148,8 @@ func (h *Handlers) deleteRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.reloadCaddy(); err != nil {
-		log.Printf("WARN: failed to reload caddy: %v", err)
+	if err := h.publishTraefikConfig(); err != nil {
+		log.Printf("WARN: failed to publish Traefik configuration: %v", err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -231,18 +231,14 @@ func (h *Handlers) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// reloadCaddy regenerates and reloads the Caddyfile
-func (h *Handlers) reloadCaddy() error {
+// publishTraefikConfig regenerates the file-provider configuration.
+func (h *Handlers) publishTraefikConfig() error {
 	routes := h.store.List()
-	routeInfos := caddy.RoutesToRouteInfos(routes)
-
-	tlsCfg := caddy.TLSConfig{
-		DNSProvider:       h.cfg.TLS.DNSProvider,
-		DNSProviderModule: h.cfg.TLS.DNSProviderModule,
-		DNSTokenEnvVar:    h.cfg.TLS.DNSTokenEnvVar,
-	}
-
-	content, err := caddy.GenerateCaddyfile(routeInfos, tlsCfg, h.cfg.BaseDomain)
+	routeInfos := traefik.RoutesToRouteInfos(routes)
+	content, err := traefik.GenerateDynamicConfig(routeInfos, traefik.Config{
+		EntryPoint:   h.cfg.TraefikEntryPoint,
+		CertResolver: h.cfg.TraefikCertResolver,
+	}, h.cfg.BaseDomain)
 	if err != nil {
 		return err
 	}

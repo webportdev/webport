@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/webportdev/webport/internal/caddy"
 	"github.com/webportdev/webport/internal/config"
 	"github.com/webportdev/webport/internal/route"
+	"github.com/webportdev/webport/internal/traefik"
 )
 
-// Ensure mockWriter implements the caddy.Writer interface
-var _ caddy.Writer = (*mockWriter)(nil)
+// Ensure mockWriter implements the traefik.Writer interface
+var _ traefik.Writer = (*mockWriter)(nil)
 
 // mockWriter is a mock Writer that doesn't actually execute commands
 type mockWriter struct {
@@ -34,15 +34,17 @@ func (m *mockWriter) GetPath() string {
 }
 
 func newMockWriter() *mockWriter {
-	return &mockWriter{path: "/tmp/test/Caddyfile"}
+	return &mockWriter{path: "/tmp/test/webport.yml"}
 }
 
 func newTestHandlers() *Handlers {
 	cfg := &config.Config{
-		BaseDomain:    "example.com",
-		Port:          8080,
-		DefaultTTL:    300 * time.Second,
-		CaddyfilePath: "/tmp/test/Caddyfile",
+		BaseDomain:               "example.com",
+		Port:                     8080,
+		DefaultTTL:               300 * time.Second,
+		TraefikDynamicConfigPath: "/tmp/test/webport.yml",
+		TraefikEntryPoint:        "websecure",
+		TraefikCertResolver:      "webport",
 	}
 	writer := newMockWriter()
 	store := route.NewStore()
@@ -71,6 +73,9 @@ func TestRegisterRoute(t *testing.T) {
 
 	if resp.StatusCode != http.StatusCreated {
 		t.Errorf("Status = %v, want %v", resp.StatusCode, http.StatusCreated)
+	}
+	if !strings.Contains(h.writer.(*mockWriter).content, `url: "http://127.0.0.1:3000"`) {
+		t.Fatalf("registration did not publish Traefik route:\n%s", h.writer.(*mockWriter).content)
 	}
 
 	var gotRoute route.Route

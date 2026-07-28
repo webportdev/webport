@@ -27,7 +27,7 @@ func TestUnsupportedProvider(t *testing.T) {
 }
 
 func TestCuratedProviders(t *testing.T) {
-	t.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+	t.Setenv("CF_DNS_API_TOKEN", "test-token")
 	t.Setenv("DO_AUTH_TOKEN", "test-token")
 	for _, provider := range []string{"cloudflare", "digitalocean", "route53"} {
 		if _, err := newProvider(provider); err != nil {

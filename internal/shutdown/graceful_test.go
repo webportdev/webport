@@ -3,11 +3,12 @@ package shutdown
 import (
 	"log"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/webportdev/webport/internal/caddy"
 	"github.com/webportdev/webport/internal/route"
+	"github.com/webportdev/webport/internal/traefik"
 )
 
 // mockWriter is a mock Writer that doesn't actually execute commands
@@ -19,8 +20,7 @@ type mockWriter struct {
 
 func (m *mockWriter) Write(content string) error {
 	m.content = content
-	// Check if it's essentially empty (just headers, no routes)
-	if len(content) < 100 { // Empty Caddyfile with just header is ~70 chars
+	if !strings.Contains(content, "http:") {
 		m.emptyWriteCount++
 	}
 	return nil
@@ -32,7 +32,7 @@ func (m *mockWriter) GetPath() string {
 
 func TestShutdownClearsRoutes(t *testing.T) {
 	store := route.NewStore()
-	writer := &mockWriter{path: "/tmp/test/Caddyfile"}
+	writer := &mockWriter{path: "/tmp/test/webport.yml"}
 
 	server := &http.Server{
 		Addr:    ":8080",
@@ -55,7 +55,7 @@ func TestShutdownClearsRoutes(t *testing.T) {
 		ExpiresAt: time.Now().Add(time.Hour),
 	})
 
-	manager := NewManager(store, writer, server, nil, 5*time.Second, caddy.TLSConfig{}, "example.com")
+	manager := NewManager(store, writer, server, nil, 5*time.Second, traefik.Config{EntryPoint: "websecure", CertResolver: "webport"}, "example.com")
 
 	manager.Shutdown()
 
@@ -64,7 +64,7 @@ func TestShutdownClearsRoutes(t *testing.T) {
 		t.Errorf("Store count = %d, want 0 after shutdown", store.Count())
 	}
 
-	// Verify empty Caddyfile was written
+	// Verify empty Traefik configuration was written
 	if writer.emptyWriteCount != 1 {
 		t.Errorf("Expected 1 empty write, got %d", writer.emptyWriteCount)
 	}
@@ -72,14 +72,14 @@ func TestShutdownClearsRoutes(t *testing.T) {
 
 func TestShutdownCallsOnExit(t *testing.T) {
 	store := route.NewStore()
-	writer := &mockWriter{path: "/tmp/test/Caddyfile"}
+	writer := &mockWriter{path: "/tmp/test/webport.yml"}
 
 	server := &http.Server{
 		Addr:    ":8080",
 		Handler: http.NewServeMux(),
 	}
 
-	manager := NewManager(store, writer, server, nil, 5*time.Second, caddy.TLSConfig{}, "example.com")
+	manager := NewManager(store, writer, server, nil, 5*time.Second, traefik.Config{EntryPoint: "websecure", CertResolver: "webport"}, "example.com")
 
 	exitCalled := false
 	manager.OnExit(func() {
@@ -95,7 +95,7 @@ func TestShutdownCallsOnExit(t *testing.T) {
 
 func TestShutdownStopsTTLChecker(t *testing.T) {
 	store := route.NewStore()
-	writer := &mockWriter{path: "/tmp/test/Caddyfile"}
+	writer := &mockWriter{path: "/tmp/test/webport.yml"}
 
 	server := &http.Server{
 		Addr:    ":8080",
@@ -105,7 +105,7 @@ func TestShutdownStopsTTLChecker(t *testing.T) {
 	checker := route.NewTTLChecker(store, 100*time.Millisecond, func(routes []route.Route) {})
 	checker.Start()
 
-	manager := NewManager(store, writer, server, checker, 5*time.Second, caddy.TLSConfig{}, "example.com")
+	manager := NewManager(store, writer, server, checker, 5*time.Second, traefik.Config{EntryPoint: "websecure", CertResolver: "webport"}, "example.com")
 	manager.Shutdown()
 
 	// If Stop() was called, starting a new checker should work fine
@@ -117,7 +117,7 @@ func TestShutdownStopsTTLChecker(t *testing.T) {
 
 func TestShutdownWithServer(t *testing.T) {
 	store := route.NewStore()
-	writer := &mockWriter{path: "/tmp/test/Caddyfile"}
+	writer := &mockWriter{path: "/tmp/test/webport.yml"}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +135,7 @@ func TestShutdownWithServer(t *testing.T) {
 	}()
 	time.Sleep(100 * time.Millisecond) // Give server time to start
 
-	manager := NewManager(store, writer, server, nil, 5*time.Second, caddy.TLSConfig{}, "example.com")
+	manager := NewManager(store, writer, server, nil, 5*time.Second, traefik.Config{EntryPoint: "websecure", CertResolver: "webport"}, "example.com")
 
 	doneCh := make(chan struct{})
 	go func() {
@@ -153,10 +153,10 @@ func TestShutdownWithServer(t *testing.T) {
 
 func TestNewManager(t *testing.T) {
 	store := route.NewStore()
-	writer := &mockWriter{path: "/tmp/test/Caddyfile"}
+	writer := &mockWriter{path: "/tmp/test/webport.yml"}
 	server := &http.Server{Addr: ":8080"}
 
-	manager := NewManager(store, writer, server, nil, 5*time.Second, caddy.TLSConfig{}, "example.com")
+	manager := NewManager(store, writer, server, nil, 5*time.Second, traefik.Config{EntryPoint: "websecure", CertResolver: "webport"}, "example.com")
 
 	if manager == nil {
 		t.Error("NewManager returned nil")
@@ -177,10 +177,10 @@ func TestNewManager(t *testing.T) {
 
 func TestSetupSignals(t *testing.T) {
 	store := route.NewStore()
-	writer := &mockWriter{path: "/tmp/test/Caddyfile"}
+	writer := &mockWriter{path: "/tmp/test/webport.yml"}
 	server := &http.Server{Addr: ":8080"}
 
-	manager := SetupSignals(store, writer, server, nil, 5*time.Second, caddy.TLSConfig{}, "example.com")
+	manager := SetupSignals(store, writer, server, nil, 5*time.Second, traefik.Config{EntryPoint: "websecure", CertResolver: "webport"}, "example.com")
 
 	if manager == nil {
 		t.Error("SetupSignals returned nil")
@@ -206,10 +206,10 @@ func captureLogs(f func()) []string {
 func TestShutdownLogs(t *testing.T) {
 	// This test mainly ensures that logging during shutdown doesn't cause issues
 	store := route.NewStore()
-	writer := &mockWriter{path: "/tmp/test/Caddyfile"}
+	writer := &mockWriter{path: "/tmp/test/webport.yml"}
 	server := &http.Server{Addr: ":8080"}
 
-	manager := NewManager(store, writer, server, nil, 5*time.Second, caddy.TLSConfig{}, "example.com")
+	manager := NewManager(store, writer, server, nil, 5*time.Second, traefik.Config{EntryPoint: "websecure", CertResolver: "webport"}, "example.com")
 
 	// Should not panic
 	captureLogs(func() {
