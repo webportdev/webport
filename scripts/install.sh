@@ -197,7 +197,12 @@ check_prerequisites() {
 	fi
 	if [[ "$PLATFORM" == darwin ]]; then
 		command -v launchctl >/dev/null 2>&1 || missing+=("launchctl")
-		[[ -x /usr/sbin/lsof ]] || missing+=("/usr/sbin/lsof")
+		# lsof is used by the installed daemon, not while staging an
+		# installation beneath WEBPORT_INSTALL_ROOT. Avoid requiring the
+		# macOS host path in cross-platform installer tests.
+		if [[ "$ROOT" == / ]]; then
+			[[ -x /usr/sbin/lsof ]] || missing+=("/usr/sbin/lsof")
+		fi
 		if (( TRUST_LOCAL_CA )); then
 			for command in security cmp; do command -v "$command" >/dev/null 2>&1 || missing+=("$command"); done
 		fi
