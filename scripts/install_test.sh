@@ -44,6 +44,31 @@ exit 0
 EOF
 chmod +x "$artifacts/traefik"
 
+bootstrap_release="$tmp/bootstrap-release"
+bootstrap_bundle="$bootstrap_release/webport-installer_vtest"
+mkdir -p "$bootstrap_bundle" "$bootstrap_release"
+cp -R "$SCRIPT_DIR" "$bootstrap_bundle/scripts"
+cp -R "$SCRIPT_DIR/../systemd" "$bootstrap_bundle/systemd"
+cp -R "$SCRIPT_DIR/../macos" "$bootstrap_bundle/macos"
+cp -R "$SCRIPT_DIR/../traefik" "$bootstrap_bundle/traefik"
+tar -C "$bootstrap_release" -czf "$bootstrap_release/webport-installer_vtest.tar.gz" \
+	webport-installer_vtest
+tar -C "$artifacts" -czf "$bootstrap_release/webport_vtest_linux_amd64.tar.gz" \
+	webport webportctl webport-dns
+(
+	cd "$bootstrap_release"
+	sha256sum webport-installer_vtest.tar.gz webport_vtest_linux_amd64.tar.gz >SHA256SUMS
+)
+root="$tmp/bootstrap"
+mkdir -p "$root/usr/local/bin"
+cp "$artifacts/traefik" "$root/usr/local/bin/traefik"
+WEBPORT_VERSION=vtest WEBPORT_RELEASE_BASE_URL="file://$bootstrap_release" \
+WEBPORT_INSTALL_ROOT="$root" \
+	bash -s -- --mode webport --base-domain webport.localhost --non-interactive --yes \
+	<"$SCRIPT_DIR/bootstrap-install.sh"
+assert_file "$root/usr/local/bin/webport"
+assert_file "$root/usr/local/libexec/webport/installer/scripts/install.sh"
+
 cloudflare="$tmp/cloudflare.env"
 printf 'CF_DNS_API_TOKEN=test-secret\n' >"$cloudflare"
 cloudflare_bearer="$tmp/cloudflare-bearer.env"

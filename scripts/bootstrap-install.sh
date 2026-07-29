@@ -96,9 +96,10 @@ tar -xzf "$tmp/$installer_archive" -C "$installer_root"
 if [[ -x "$installer_root/scripts/install.sh" || -x "$installer_root/scripts/install-macos.sh" ]]; then
 	repo_root=$installer_root
 else
-	repo_root=$(find "$installer_root" -mindepth 1 -maxdepth 2 -type f \( -name install.sh -o -name install-macos.sh \) | head -n 1)
-	[[ -n "$repo_root" ]] || die "installer bundle does not contain install scripts"
-	repo_root=$(cd -- "$(dirname "$repo_root")/.." && pwd)
+	installer_path=$(find "$installer_root" -mindepth 1 -maxdepth 3 -type f \
+		-path '*/scripts/install.sh' -print -quit)
+	[[ -n "$installer_path" ]] || die "installer bundle does not contain install scripts"
+	repo_root=$(cd -- "$(dirname "$installer_path")/.." && pwd)
 fi
 
 case "$os" in
@@ -106,9 +107,20 @@ case "$os" in
 	darwin) installer="$repo_root/scripts/install-macos.sh" ;;
 esac
 
-WEBPORT_BOOTSTRAP=1 WEBPORT_ARTIFACT_DIR="$artifacts" "$installer" \
-	--webport-source local \
-	--artifact-dir "$artifacts" \
-	--version "$resolved_version" \
-	--release-base-url "$base" \
-	"$@"
+run_installer() {
+	WEBPORT_BOOTSTRAP=1 WEBPORT_ARTIFACT_DIR="$artifacts" "$installer" \
+		--webport-source local \
+		--artifact-dir "$artifacts" \
+		--version "$resolved_version" \
+		--release-base-url "$base" \
+		"$@"
+}
+
+# `bash -s` consumes the curl pipe as stdin. Reattach the installer to the
+# controlling terminal when one exists so its interactive prompts still work.
+if { exec 3</dev/tty; } 2>/dev/null; then
+	run_installer "$@" <&3
+	exec 3<&-
+else
+	run_installer "$@"
+fi
