@@ -18,8 +18,7 @@ cat >"$shims/systemctl" <<'EOF'
 #!/usr/bin/env bash
 set -eu
 printf '%s\n' "$*" >>"${SYSTEMCTL_LOG:?}"
-if [[ "${FAIL_TRAEFIK_START:-0}" == 1 &&
-	( "$*" == "enable --now traefik.service" || "$*" == "start traefik.service" ) ]]; then
+if [[ "${FAIL_TRAEFIK_START:-0}" == 1 && "$*" == "restart traefik.service" ]]; then
 	exit 1
 fi
 EOF
@@ -75,8 +74,8 @@ assert_contains "$root/etc/systemd/system/webport.service" "User=webport"
 assert_contains "$root/etc/systemd/system/webport.service" "ExecStart=/usr/local/bin/webport daemon"
 assert_contains "$root/etc/systemd/system/traefik.service" "PartOf=webport-stack.target"
 assert_contains "$root/etc/systemd/system/webport-stack.target" "Requires=traefik.service webport.service"
-assert_contains "$SYSTEMCTL_LOG" "start traefik.service"
-assert_contains "$SYSTEMCTL_LOG" "start webport.service"
+assert_contains "$SYSTEMCTL_LOG" "restart traefik.service"
+assert_contains "$SYSTEMCTL_LOG" "restart webport.service"
 assert_contains "$SYSTEMCTL_LOG" "enable --now webport-stack.target"
 
 root="$tmp/existing-traefik"
@@ -107,7 +106,8 @@ WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
 	--traefik-source local --artifact-dir "$artifacts" --non-interactive --yes
 assert_contains "$root/etc/traefik/traefik.yml" "provider: hetzner"
 assert_contains "$root/etc/traefik/traefik.env" "HETZNER_API_KEY=test-secret"
-assert_contains "$SYSTEMCTL_LOG" "enable --now traefik.service"
+assert_contains "$SYSTEMCTL_LOG" "enable traefik.service"
+assert_contains "$SYSTEMCTL_LOG" "restart traefik.service"
 expect_failure env WEBPORT_INSTALL_ROOT="$tmp/generic-dns" "$INSTALLER" \
 	--mode full --provider hetzner --base-domain example.com --credentials-file "$generic" \
 	--webport-source local --traefik-source local --artifact-dir "$artifacts" \

@@ -532,10 +532,9 @@ start_traefik() {
 			privileged launchctl kickstart -k system/com.webport.traefik
 	else
 		if [[ "$MODE" == traefik && "$stack_available" == 0 ]]; then
-			privileged systemctl enable --now traefik.service
-		else
-			privileged systemctl start traefik.service
+			privileged systemctl enable traefik.service
 		fi
+		privileged systemctl restart traefik.service
 	fi
 }
 
@@ -551,15 +550,26 @@ backup_managed_traefik() {
 	local backup_dir=$1
 	[[ -f "$managed_traefik_marker" ]] || return 1
 	mkdir -p "$backup_dir"
-	cp "$traefik_binary" "$backup_dir/traefik"
-	cp "$(path "$traefik_config_path")" "$backup_dir/traefik.yml"
-	cp "$(path "$traefik_credentials_path")" "$backup_dir/traefik.env"
-	cp "$traefik_service" "$backup_dir/service"
-	cp "$managed_traefik_marker" "$backup_dir/marker"
+	backup_file "$traefik_binary" "$backup_dir/traefik" || return 1
+	backup_file "$(path "$traefik_config_path")" "$backup_dir/traefik.yml" || return 1
+	backup_file "$(path "$traefik_credentials_path")" "$backup_dir/traefik.env" || return 1
+	backup_file "$traefik_service" "$backup_dir/service" || return 1
+	backup_file "$managed_traefik_marker" "$backup_dir/marker" || return 1
 	if [[ "$PLATFORM" == darwin ]]; then
-		cp "$(path /usr/local/libexec/webport/run-traefik)" "$backup_dir/run-traefik"
+		backup_file "$(path /usr/local/libexec/webport/run-traefik)" "$backup_dir/run-traefik" || return 1
 	fi
 	return 0
+}
+
+backup_file() {
+	local source=$1 destination=$2
+	if [[ -r "$source" ]]; then
+		cp "$source" "$destination"
+	elif [[ "$ROOT" == / ]]; then
+		privileged cat "$source" >"$destination"
+	else
+		return 1
+	fi
 }
 
 rollback_traefik() {
@@ -603,7 +613,7 @@ start_webport() {
 		privileged launchctl bootstrap system "$webport_service"
 		privileged launchctl kickstart -k system/com.webport.webport
 	else
-		privileged systemctl start webport.service
+		privileged systemctl restart webport.service
 	fi
 }
 
@@ -650,7 +660,9 @@ install_managed_traefik() {
 	local candidate config backup_dir=
 	candidate=$(prepare_traefik_binary)
 	config="$BUILD_DIR/traefik.yml"; render_traefik_config "$config"
-	if [[ "$DRY_RUN" == 0 ]] && backup_managed_traefik "$BUILD_DIR/traefik-previous"; then
+	if [[ "$DRY_RUN" == 0 && -f "$managed_traefik_marker" ]]; then
+		backup_managed_traefik "$BUILD_DIR/traefik-previous" ||
+			die "could not back up the existing managed Traefik installation"
 		backup_dir=$BUILD_DIR/traefik-previous
 	fi
 	if [[ "$ROOT" == / && "$PLATFORM" == linux ]]; then
@@ -872,6 +884,17 @@ trust_local_ca() {
 	log "Trusted the webport local CA in the macOS System Keychain."
 }
 
+wait_for_webport_ready() {
+	local api=http://127.0.0.1:8080
+	for _ in {1..40}; do
+		if curl --noproxy '*' -fsS "$api/ready" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 0.25
+	done
+	return 1
+}
+
 case "$MODE" in
 	traefik) install_managed_traefik ;;
 	webport) install_webport; sync_dns ;;
@@ -881,8 +904,14 @@ enable_webport_stack
 trust_local_ca
 
 if [[ "$ROOT" == / && "$DRY_RUN" == 0 && "$TLS_MODE" == local-ca ]]; then
-	if ! "$(path /usr/local/bin/webport)" doctor; then
+	if ! wait_for_webport_ready; then
+		die "installation completed but the webport daemon did not become ready; inspect webport service logs"
+	fi
+	if (( TRUST_LOCAL_CA )) && ! "$(path /usr/local/bin/webport)" doctor; then
 		die "installation completed but post-install diagnostics failed; run 'webport doctor' after resolving the reported issue"
+	fi
+	if (( ! TRUST_LOCAL_CA )); then
+		log "Skipped TLS trust diagnostics because the local CA was not trusted."
 	fi
 fi
 
