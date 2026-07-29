@@ -6,4 +6,4 @@ while IFS= read -r assignment || [[ -n "$assignment" ]]; do
 	export "$assignment"
 done </usr/local/etc/webport/webport.env
 
-exec /usr/local/bin/webport
+exec /usr/local/bin/webport daemon

@@ -104,6 +104,44 @@ func TestRegisterRoute(t *testing.T) {
 	}
 }
 
+func TestLeaseLifecycleAndReadiness(t *testing.T) {
+	h := newTestHandlers()
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	readyBefore := httptest.NewRecorder()
+	mux.ServeHTTP(readyBefore, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if readyBefore.Code != http.StatusServiceUnavailable {
+		t.Fatalf("initial readiness = %d, want 503", readyBefore.Code)
+	}
+
+	body := `{"client_id":"client-one","project":"app","branch":"main","port":3000,"ttl":30}`
+	register := httptest.NewRecorder()
+	mux.ServeHTTP(register, httptest.NewRequest(http.MethodPost, "/v1/leases", strings.NewReader(body)))
+	if register.Code != http.StatusCreated {
+		t.Fatalf("register status = %d, body %s", register.Code, register.Body.String())
+	}
+	var result leaseResponse
+	if err := json.NewDecoder(register.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.LeaseID == "" || h.store.Count() != 1 {
+		t.Fatalf("lease = %q, routes = %d", result.LeaseID, h.store.Count())
+	}
+
+	readyAfter := httptest.NewRecorder()
+	mux.ServeHTTP(readyAfter, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if readyAfter.Code != http.StatusOK {
+		t.Fatalf("readiness after registration = %d", readyAfter.Code)
+	}
+
+	remove := httptest.NewRecorder()
+	mux.ServeHTTP(remove, httptest.NewRequest(http.MethodDelete, "/v1/leases/"+result.LeaseID, nil))
+	if remove.Code != http.StatusNoContent || h.store.Count() != 0 {
+		t.Fatalf("delete status = %d, routes = %d", remove.Code, h.store.Count())
+	}
+}
+
 func TestRegisterRouteWithBranchSlash(t *testing.T) {
 	h := newTestHandlers()
 

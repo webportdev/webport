@@ -47,6 +47,8 @@ chmod +x "$artifacts/traefik"
 
 cloudflare="$tmp/cloudflare.env"
 printf 'CF_DNS_API_TOKEN=test-secret\n' >"$cloudflare"
+cloudflare_bearer="$tmp/cloudflare-bearer.env"
+printf 'CF_DNS_API_TOKEN=Bearer test-secret\n' >"$cloudflare_bearer"
 digitalocean="$tmp/digitalocean.env"
 printf 'DO_AUTH_TOKEN=test-secret\n' >"$digitalocean"
 generic="$tmp/generic.env"
@@ -69,6 +71,8 @@ assert_contains "$root/etc/traefik/traefik.yml" "provider: cloudflare"
 assert_contains "$root/etc/webport/webport.env" "WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH=/etc/traefik/dynamic/webport.yml"
 assert_contains "$root/etc/systemd/system/webport.service" "Requires=traefik.service"
 assert_contains "$root/etc/systemd/system/webport.service" "PartOf=webport-stack.target"
+assert_contains "$root/etc/systemd/system/webport.service" "User=webport"
+assert_contains "$root/etc/systemd/system/webport.service" "ExecStart=/usr/local/bin/webport daemon"
 assert_contains "$root/etc/systemd/system/traefik.service" "PartOf=webport-stack.target"
 assert_contains "$root/etc/systemd/system/webport-stack.target" "Requires=traefik.service webport.service"
 assert_contains "$SYSTEMCTL_LOG" "start traefik.service"
@@ -170,7 +174,10 @@ assert_contains "$root/etc/systemd/system/traefik.service" "old-service"
 
 expect_failure "$INSTALLER" --mode caddy --provider cloudflare --non-interactive --yes --dry-run
 expect_failure "$INSTALLER" --mode traefik --provider cloudflare --caddy-source release --non-interactive --yes --dry-run
-expect_failure "$INSTALLER" --mode full --tls-mode local-ca --trust-local-ca \
-	--base-domain webport.localhost --non-interactive --yes --dry-run
+expect_failure "$INSTALLER" --mode full --provider cloudflare \
+	--base-domain dev.example.com --credentials-file "$cloudflare_bearer" \
+	--non-interactive --yes --dry-run
+"$INSTALLER" --mode full --tls-mode local-ca --trust-local-ca \
+	--base-domain webport.localhost --non-interactive --yes --dry-run >/dev/null
 
 printf 'Linux installer tests passed\n'

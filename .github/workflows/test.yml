@@ -17,10 +17,16 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go test ./...
+      - run: go test -race ./...
       - run: go vet ./...
       - run: ./scripts/install_test.sh
       - run: ./scripts/install_macos_test.sh
       - run: python3 -c "import pathlib, plistlib; [plistlib.load(path.open('rb')) for path in map(pathlib.Path, ['macos/com.webport.traefik.plist', 'macos/com.webport.webport.plist'])]"
+      - name: Reject obsolete Caddy documentation
+        shell: bash
+        run: |
+          ! grep -E 'WEBPORT_CADDY|WEBPORT_TLS_DNS|internal/caddy|Caddyfile' \
+            README.md verify.md scripts/README.md MIGRATION.md
       - name: Test real Traefik file-provider updates
         shell: bash
         run: |

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -29,6 +30,16 @@ type options struct {
 }
 
 func main() {
+	if len(os.Args) == 2 {
+		switch os.Args[1] {
+		case "help", "-h", "--help":
+			usage()
+			return
+		case "version", "--version":
+			fmt.Println(buildVersion())
+			return
+		}
+	}
 	if len(os.Args) < 2 || (os.Args[1] != "status" && os.Args[1] != "sync") {
 		usage()
 		os.Exit(2)
@@ -74,6 +85,13 @@ func main() {
 		fatal(err)
 	}
 	printStatus(opts.baseDomain, status)
+}
+
+func buildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
 }
 
 func parseOptions(command string, args []string) (options, error) {

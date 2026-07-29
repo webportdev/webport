@@ -11,7 +11,10 @@ func TestLoadDefaults(t *testing.T) {
 	unsetEnvVars()
 	os.Setenv("WEBPORT_BASE_DOMAIN", "test.example.com")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.TraefikDynamicConfigPath != "/etc/traefik/dynamic/webport.yml" {
 		t.Errorf("TraefikDynamicConfigPath = %v", cfg.TraefikDynamicConfigPath)
@@ -34,14 +37,14 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ListenHost != "127.0.0.1" {
 		t.Errorf("ListenHost = %v, want 127.0.0.1", cfg.ListenHost)
 	}
-	if cfg.DefaultTTL != 300*time.Second {
-		t.Errorf("DefaultTTL = %v, want 300s", cfg.DefaultTTL)
+	if cfg.DefaultTTL != 30*time.Second {
+		t.Errorf("DefaultTTL = %v, want 30s", cfg.DefaultTTL)
 	}
-	if cfg.TTLCheckInterval != 30*time.Second {
-		t.Errorf("TTLCheckInterval = %v, want 30s", cfg.TTLCheckInterval)
+	if cfg.TTLCheckInterval != 10*time.Second {
+		t.Errorf("TTLCheckInterval = %v, want 10s", cfg.TTLCheckInterval)
 	}
-	if !cfg.DiscoveryEnabled || cfg.DiscoveryInterval != 2*time.Second {
-		t.Errorf("Discovery defaults = %v/%v, want true/2s", cfg.DiscoveryEnabled, cfg.DiscoveryInterval)
+	if cfg.DiscoveryEnabled || cfg.DiscoveryInterval != 2*time.Second {
+		t.Errorf("Discovery defaults = %v/%v, want false/2s", cfg.DiscoveryEnabled, cfg.DiscoveryInterval)
 	}
 }
 
@@ -61,7 +64,10 @@ func TestLoadWithEnvVars(t *testing.T) {
 	os.Setenv("WEBPORT_DISCOVERY_ENABLED", "false")
 	os.Setenv("WEBPORT_DISCOVERY_INTERVAL", "5s")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.BaseDomain != "example.com" {
 		t.Errorf("BaseDomain = %v, want example.com", cfg.BaseDomain)
@@ -96,25 +102,44 @@ func TestLoadRequiredBaseDomain(t *testing.T) {
 	unsetEnvVars()
 	// Don't set WEBPORT_BASE_DOMAIN
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("Expected panic when BASE_DOMAIN is not set")
-		}
-	}()
-
-	Load()
+	if _, err := Load(); err == nil {
+		t.Error("expected error when BASE_DOMAIN is not set")
+	}
 }
 
 func TestLoadRejectsInvalidTLSMode(t *testing.T) {
 	unsetEnvVars()
 	os.Setenv("WEBPORT_BASE_DOMAIN", "example.com")
 	os.Setenv("WEBPORT_TLS_MODE", "invalid")
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected invalid TLS mode to panic")
-		}
-	}()
-	Load()
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid TLS mode error")
+	}
+}
+
+func TestLoadRejectsMalformedValues(t *testing.T) {
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{"WEBPORT_PORT", "not-a-port"},
+		{"WEBPORT_PORT", "70000"},
+		{"WEBPORT_DEFAULT_TTL", "soon"},
+		{"WEBPORT_DEFAULT_TTL", "0s"},
+		{"WEBPORT_TTL_CHECK_INTERVAL", "-1s"},
+		{"WEBPORT_DISCOVERY_ENABLED", "sometimes"},
+		{"WEBPORT_DISCOVERY_INTERVAL", "0s"},
+		{"WEBPORT_BASE_DOMAIN", "not_a_domain"},
+	}
+	for _, test := range tests {
+		t.Run(test.key+"="+test.value, func(t *testing.T) {
+			unsetEnvVars()
+			os.Setenv("WEBPORT_BASE_DOMAIN", "example.com")
+			os.Setenv(test.key, test.value)
+			if _, err := Load(); err == nil {
+				t.Fatal("expected configuration error")
+			}
+		})
+	}
 }
 
 func TestGetListenAddr(t *testing.T) {
@@ -122,7 +147,10 @@ func TestGetListenAddr(t *testing.T) {
 	os.Setenv("WEBPORT_BASE_DOMAIN", "example.com")
 	os.Setenv("WEBPORT_PORT", "9999")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	addr := cfg.GetListenAddr()
 
 	if addr != "127.0.0.1:9999" {
@@ -148,6 +176,7 @@ func unsetEnvVars() {
 	os.Unsetenv("WEBPORT_PORT")
 	os.Unsetenv("WEBPORT_DEFAULT_TTL")
 	os.Unsetenv("WEBPORT_TTL_CHECK_INTERVAL")
+	os.Unsetenv("WEBPORT_SHUTDOWN_TIMEOUT")
 	os.Unsetenv("WEBPORT_DISCOVERY_ENABLED")
 	os.Unsetenv("WEBPORT_DISCOVERY_INTERVAL")
 }

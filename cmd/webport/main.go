@@ -19,8 +19,11 @@ import (
 	"github.com/coreos/go-systemd/v22/daemon"
 )
 
-func main() {
-	cfg := config.Load()
+func runDaemon() {
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Invalid configuration: %v", err)
+	}
 	store := route.NewStore()
 	writer := traefik.NewWriter(cfg.TraefikDynamicConfigPath)
 	proxyCfg := traefik.Config{
@@ -58,15 +61,11 @@ func main() {
 		return nil
 	}
 
-	ttlChecker := route.NewTTLChecker(store, cfg.TTLCheckInterval, func(_ []route.Route) {
-		if err := publishTraefikConfig(); err != nil {
-			log.Printf("WARN: failed to publish Traefik configuration after route expiry: %v", err)
-		}
-	})
-	if err := publishTraefikConfig(); err != nil {
+	controller := route.NewController(store, publishTraefikConfig)
+	if err := controller.Initialize(); err != nil {
 		log.Fatalf("Failed to publish initial Traefik configuration: %v", err)
 	}
-	ttlChecker.Start()
+	controller.Start(cfg.TTLCheckInterval, cfg.BaseDomain)
 
 	var stopLocalCARenewal func()
 	if localCAEnabled {
@@ -116,7 +115,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	api.NewHandlers(store, writer, cfg).
-		WithPublisher(publishTraefikConfig).
+		WithController(controller).
 		RegisterRoutes(mux)
 	server := &http.Server{
 		Addr:              cfg.GetListenAddr(),
@@ -125,7 +124,8 @@ func main() {
 	}
 
 	watchdogStop := startWatchdog()
-	shutdownManager := shutdown.NewManager(store, writer, server, ttlChecker, cfg.ShutdownTimeout, proxyCfg, cfg.BaseDomain)
+	shutdownManager := shutdown.NewManager(store, writer, server, nil, cfg.ShutdownTimeout, proxyCfg, cfg.BaseDomain)
+	shutdownManager.OnStopping(controller.Stop)
 	if stopLocalCARenewal != nil {
 		shutdownManager.OnStopping(stopLocalCARenewal)
 	}

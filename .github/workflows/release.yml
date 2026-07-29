@@ -20,6 +20,7 @@ jobs:
       - run: go test ./...
       - run: go vet ./...
       - run: ./scripts/install_test.sh
+      - run: ./scripts/install_macos_test.sh
       - name: Build release artifacts
         shell: bash
         run: |

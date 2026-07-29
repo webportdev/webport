@@ -7,7 +7,7 @@ REPO_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
 source "$SCRIPT_DIR/versions.env"
 
 MODE=
-TLS_MODE=acme
+TLS_MODE=
 PROVIDER=
 BASE_DOMAIN=
 CREDENTIALS_FILE=
@@ -51,9 +51,11 @@ Usage: scripts/install.sh [options]
 
 Modes:
   --mode webport|traefik|full
+  --external-traefik         Alias for --mode webport
 Proxy TLS:
   --tls-mode acme|local-ca
-  --trust-local-ca            Trust the generated CA in the macOS System Keychain
+  --public | --local         Select public ACME or local-CA mode
+  --trust-local-ca           Trust the generated CA in the OS trust store
   --provider LEGO_PROVIDER_CODE
   --credentials-file FILE
 Required for webport/full:
@@ -69,6 +71,7 @@ Automation:
 
 Cloudflare uses CF_DNS_API_TOKEN. DigitalOcean uses DO_AUTH_TOKEN.
 Other Lego providers require a credentials file containing their environment variables.
+With no mode/TLS/domain options, installs full local HTTPS at webport.localhost.
 EOF
 }
 
@@ -117,6 +120,9 @@ while (($#)); do
 	case "$1" in
 		--mode) MODE=${2:-}; shift 2 ;;
 		--tls-mode) TLS_MODE=${2:-}; shift 2 ;;
+		--public) TLS_MODE=acme; shift ;;
+		--local) TLS_MODE=local-ca; shift ;;
+		--external-traefik) MODE=webport; shift ;;
 		--provider) PROVIDER=${2:-}; shift 2 ;;
 		--base-domain) BASE_DOMAIN=${2:-}; shift 2 ;;
 		--credentials-file) CREDENTIALS_FILE=${2:-}; shift 2 ;;
@@ -148,7 +154,13 @@ prompt_value() {
 	printf -v "$variable" '%s' "$value"
 }
 
-[[ -n "$MODE" ]] || { (( NON_INTERACTIVE )) && die "--mode is required"; prompt_value MODE "Install mode (webport/traefik/full)"; }
+[[ -n "$MODE" ]] || MODE=full
+if [[ -z "$TLS_MODE" ]]; then
+	[[ -n "$PROVIDER" ]] && TLS_MODE=acme || TLS_MODE=local-ca
+fi
+if [[ "$TLS_MODE" == local-ca && -z "$BASE_DOMAIN" && "$MODE" != traefik ]]; then
+	BASE_DOMAIN=webport.localhost
+fi
 [[ "$MODE" =~ ^(webport|traefik|full)$ ]] || die "invalid mode: $MODE"
 [[ "$TLS_MODE" =~ ^(acme|local-ca)$ ]] || die "invalid TLS mode: $TLS_MODE"
 [[ "$TRAEFIK_SOURCE" =~ ^(release|local)$ ]] || die "invalid Traefik source: $TRAEFIK_SOURCE"
@@ -156,9 +168,17 @@ prompt_value() {
 [[ -z "$BASE_DOMAIN" || "$BASE_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid base domain: $BASE_DOMAIN"
 [[ -z "$DNS_ZONE" || "$DNS_ZONE" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid DNS zone: $DNS_ZONE"
 if (( TRUST_LOCAL_CA )); then
-	[[ "$PLATFORM" == darwin ]] || die "--trust-local-ca is supported only on macOS"
 	[[ "$TLS_MODE" == local-ca ]] || die "--trust-local-ca requires --tls-mode local-ca"
 	[[ "$MODE" != traefik ]] || die "--trust-local-ca requires webport or full install mode"
+fi
+if [[ "$TLS_MODE" == local-ca && "$MODE" != traefik && "$ROOT" == / ]]; then
+	if (( NON_INTERACTIVE && ! TRUST_LOCAL_CA )); then
+		die "non-interactive local installation requires --trust-local-ca"
+	fi
+	if (( ! NON_INTERACTIVE && ! TRUST_LOCAL_CA )); then
+		read -r -p "Trust the webport local CA in this machine's system trust store? [Y/n] " answer
+		[[ ! "$answer" =~ ^[Nn]$ ]] && TRUST_LOCAL_CA=1
+	fi
 fi
 
 if [[ ( "$MODE" != traefik || "$TLS_MODE" == local-ca ) && -z "$BASE_DOMAIN" ]]; then
@@ -197,6 +217,9 @@ check_prerequisites() {
 	fi
 	if [[ "$PLATFORM" == darwin ]]; then
 		command -v launchctl >/dev/null 2>&1 || missing+=("launchctl")
+		if [[ "$ROOT" == / ]]; then
+			for command in dscl seq; do command -v "$command" >/dev/null 2>&1 || missing+=("$command"); done
+		fi
 		# lsof is used by the installed daemon, not while staging an
 		# installation beneath WEBPORT_INSTALL_ROOT. Avoid requiring the
 		# macOS host path in cross-platform installer tests.
@@ -243,7 +266,7 @@ sha256_verify() {
 }
 
 validate_credentials_file() {
-	local file=$1 line assignments=0
+	local file=$1 line assignments=0 value trimmed
 	[[ -r "$file" ]] || die "credentials file is not readable: $file"
 	while IFS= read -r line || [[ -n "$line" ]]; do
 		[[ -z "$line" || "$line" == \#* ]] && continue
@@ -252,7 +275,17 @@ validate_credentials_file() {
 	done <"$file"
 	(( assignments > 0 )) || die "credentials file contains no assignments"
 	case "$PROVIDER" in
-		cloudflare) grep -q '^CF_DNS_API_TOKEN=' "$file" || die "Cloudflare credentials must define CF_DNS_API_TOKEN" ;;
+		cloudflare)
+			grep -q '^CF_DNS_API_TOKEN=' "$file" || die "Cloudflare credentials must define CF_DNS_API_TOKEN"
+			value=$(sed -n 's/^CF_DNS_API_TOKEN=//p' "$file" | head -n 1)
+			[[ ! "$value" =~ ^[Bb]earer[[:space:]] ]] ||
+				die "CF_DNS_API_TOKEN must contain only the raw token, without a Bearer prefix"
+			case "$value" in
+				\"*|*\"|\'*|*\') die "CF_DNS_API_TOKEN must not include surrounding quotes" ;;
+			esac
+			trimmed=$(printf '%s' "$value" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+			[[ "$value" == "$trimmed" ]] || die "CF_DNS_API_TOKEN must not include surrounding whitespace"
+			;;
 		digitalocean) grep -q '^DO_AUTH_TOKEN=' "$file" || die "DigitalOcean credentials must define DO_AUTH_TOKEN" ;;
 		route53) grep -Eq '^AWS_(ACCESS_KEY_ID|PROFILE|WEB_IDENTITY_TOKEN_FILE)=' "$file" || die "Route53 credentials must define AWS credentials or a profile" ;;
 	esac
@@ -678,10 +711,47 @@ install_webport() {
 		"$traefik_binary" version >/dev/null || die "existing Traefik binary is not usable"
 	fi
 	install_webport_binaries
+	local installer_assets
+	installer_assets=$(path /usr/local/libexec/webport/installer)
+	install_file "$REPO_DIR/scripts/install.sh" "$installer_assets/scripts/install.sh" 755
+	install_file "$REPO_DIR/scripts/install-macos.sh" "$installer_assets/scripts/install-macos.sh" 755
+	install_file "$REPO_DIR/scripts/bootstrap-install.sh" "$installer_assets/scripts/bootstrap-install.sh" 755
+	install_file "$REPO_DIR/scripts/versions.env" "$installer_assets/scripts/versions.env" 644
+	install_file "$REPO_DIR/systemd/webport.service" "$installer_assets/systemd/webport.service" 644
+	install_file "$REPO_DIR/systemd/traefik.service" "$installer_assets/systemd/traefik.service" 644
+	install_file "$REPO_DIR/systemd/webport-stack.target" "$installer_assets/systemd/webport-stack.target" 644
+	install_file "$REPO_DIR/systemd/webport.env.example" "$installer_assets/systemd/webport.env.example" 644
+	install_file "$REPO_DIR/traefik/traefik.yml.tmpl" "$installer_assets/traefik/traefik.yml.tmpl" 644
+	install_file "$REPO_DIR/macos/traefik.yml.tmpl" "$installer_assets/macos/traefik.yml.tmpl" 644
+	install_file "$REPO_DIR/macos/run-traefik" "$installer_assets/macos/run-traefik" 755
+	install_file "$REPO_DIR/macos/run-webport" "$installer_assets/macos/run-webport" 755
+	install_file "$REPO_DIR/macos/com.webport.traefik.plist" "$installer_assets/macos/com.webport.traefik.plist" 644
+	install_file "$REPO_DIR/macos/com.webport.webport.plist" "$installer_assets/macos/com.webport.webport.plist" 644
 	if [[ "$PLATFORM" == darwin ]]; then
+		if [[ "$ROOT" == / && "$DRY_RUN" == 0 ]] && ! id -u _webport >/dev/null 2>&1; then
+			local service_uid=
+			for candidate_uid in $(seq 499 -1 400); do
+				if ! dscl . -search /Users UniqueID "$candidate_uid" | grep -q .; then
+					service_uid=$candidate_uid
+					break
+				fi
+			done
+			[[ -n "$service_uid" ]] || die "could not allocate a macOS system UID for _webport"
+			privileged dscl . -create /Users/_webport
+			privileged dscl . -create /Users/_webport UserShell /usr/bin/false
+			privileged dscl . -create /Users/_webport RealName "Webport service"
+			privileged dscl . -create /Users/_webport UniqueID "$service_uid"
+			privileged dscl . -create /Users/_webport PrimaryGroupID 20
+			privileged dscl . -create /Users/_webport NFSHomeDirectory /var/empty
+		fi
 		install_file "$REPO_DIR/macos/run-webport" "$(path /usr/local/libexec/webport/run-webport)" 755
 		install_file "$REPO_DIR/macos/com.webport.webport.plist" "$webport_service" 644
 	else
+		if [[ "$ROOT" == / && "$DRY_RUN" == 0 ]]; then
+			getent group webport >/dev/null || privileged groupadd --system webport
+			id -u webport >/dev/null 2>&1 ||
+				privileged useradd --system --gid webport --home-dir /var/lib/webport --shell /usr/sbin/nologin webport
+		fi
 		install_file "$REPO_DIR/systemd/webport.service" "$webport_service" 644
 		install_file "$REPO_DIR/systemd/webport-stack.target" "$webport_stack_target" 644
 		stack_available=1
@@ -697,8 +767,11 @@ install_webport() {
 	if [[ "$TLS_MODE" == local-ca ]]; then
 		privileged mkdir -p "$(path "$local_ca_path")"
 		if [[ "$ROOT" == / && "$PLATFORM" == linux && "$DRY_RUN" == 0 ]] && getent group traefik >/dev/null; then
-			privileged chown root:traefik "$local_ca_path"
+			privileged chown webport:traefik "$local_ca_path"
 			privileged chmod 2750 "$local_ca_path"
+		elif [[ "$ROOT" == / && "$PLATFORM" == darwin && "$DRY_RUN" == 0 ]]; then
+			privileged chown _webport:staff "$local_ca_path"
+			privileged chmod 0750 "$local_ca_path"
 		fi
 	fi
 	env_content="WEBPORT_BASE_DOMAIN=$BASE_DOMAIN
@@ -709,15 +782,30 @@ WEBPORT_TLS_MODE=$TLS_MODE
 WEBPORT_LOCAL_CA_DIR=$local_ca_path
 WEBPORT_LISTEN_HOST=127.0.0.1
 WEBPORT_PORT=8080
-WEBPORT_DEFAULT_TTL=300s
-WEBPORT_TTL_CHECK_INTERVAL=30s
+WEBPORT_DEFAULT_TTL=30s
+WEBPORT_TTL_CHECK_INTERVAL=10s
 WEBPORT_SHUTDOWN_TIMEOUT=5s
+WEBPORT_DISCOVERY_ENABLED=false
+WEBPORT_DISCOVERY_INTERVAL=2s
 WEBPORT_DNS_PROVIDER=$PROVIDER
 WEBPORT_DNS_CREDENTIALS_FILE=$credentials_path
 WEBPORT_DNS_ZONE=$DNS_ZONE
 "
 	write_file "$(path "$webport_config_path")" 600 "$env_content"
 	privileged mkdir -p "$(dirname "$(path "$traefik_dynamic_path")")"
+	if [[ "$ROOT" == / && "$DRY_RUN" == 0 ]]; then
+		if [[ "$PLATFORM" == linux ]]; then
+			privileged chown webport:traefik "$(dirname "$traefik_dynamic_path")"
+			privileged chmod 2750 "$(dirname "$traefik_dynamic_path")"
+		else
+			privileged chown _webport:staff "$(dirname "$traefik_dynamic_path")"
+			privileged chmod 0750 "$(dirname "$traefik_dynamic_path")"
+			privileged chown root:staff "$webport_config_path"
+			privileged chmod 0640 "$webport_config_path"
+			privileged mkdir -p /usr/local/var/log/webport
+			privileged chown _webport:staff /usr/local/var/log/webport
+		fi
+	fi
 	daemon_reload
 	start_webport
 }
@@ -739,8 +827,12 @@ trust_local_ca() {
 
 	if (( DRY_RUN )); then
 		log "dry-run: wait for $ca_file"
-		privileged security add-trusted-cert -d -r trustRoot \
-			-k /Library/Keychains/System.keychain "$ca_file"
+		if [[ "$PLATFORM" == darwin ]]; then
+			privileged security add-trusted-cert -d -r trustRoot \
+				-k /Library/Keychains/System.keychain "$ca_file"
+		else
+			log "dry-run: trust $ca_file in the Linux system trust store"
+		fi
 		return
 	fi
 
@@ -749,6 +841,22 @@ trust_local_ca() {
 		sleep 0.25
 	done
 	[[ -s "$ca_file" ]] || die "local CA was not generated at $ca_file; inspect webport logs"
+
+	if [[ "$PLATFORM" == linux ]]; then
+		if command -v update-ca-certificates >/dev/null 2>&1; then
+			privileged install -m 0644 "$ca_file" /usr/local/share/ca-certificates/webport-local-ca.crt
+			privileged update-ca-certificates
+		elif command -v update-ca-trust >/dev/null 2>&1; then
+			privileged install -m 0644 "$ca_file" /etc/pki/ca-trust/source/anchors/webport-local-ca.crt
+			privileged update-ca-trust extract
+		elif command -v trust >/dev/null 2>&1; then
+			privileged trust anchor --store "$ca_file"
+		else
+			die "cannot automate CA trust: install update-ca-certificates or p11-kit, or trust $ca_file manually"
+		fi
+		log "Trusted the webport local CA in the Linux system trust store."
+		return
+	fi
 
 	if security find-certificate -c "$label" -p \
 		/Library/Keychains/System.keychain >"$existing" 2>/dev/null; then
@@ -771,5 +879,11 @@ case "$MODE" in
 esac
 enable_webport_stack
 trust_local_ca
+
+if [[ "$ROOT" == / && "$DRY_RUN" == 0 && "$TLS_MODE" == local-ca ]]; then
+	if ! "$(path /usr/local/bin/webport)" doctor; then
+		die "installation completed but post-install diagnostics failed; run 'webport doctor' after resolving the reported issue"
+	fi
+fi
 
 log "Installation complete."

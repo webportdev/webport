@@ -1,10 +1,13 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -43,9 +46,15 @@ type Config struct {
 	DiscoveryInterval time.Duration
 }
 
-// Load reads configuration from environment variables
-func Load() *Config {
+// Load reads and strictly validates configuration from environment variables.
+func Load() (*Config, error) {
 	dynamicConfigPath := getEnv("WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH", "/etc/traefik/dynamic/webport.yml")
+	port, portErr := getEnvInt("WEBPORT_PORT", 8080)
+	defaultTTL, ttlErr := getEnvDuration("WEBPORT_DEFAULT_TTL", 30*time.Second)
+	checkInterval, checkErr := getEnvDuration("WEBPORT_TTL_CHECK_INTERVAL", 10*time.Second)
+	shutdownTimeout, shutdownErr := getEnvDuration("WEBPORT_SHUTDOWN_TIMEOUT", 5*time.Second)
+	discoveryEnabled, discoveryErr := getEnvBool("WEBPORT_DISCOVERY_ENABLED", false)
+	discoveryInterval, discoveryIntervalErr := getEnvDuration("WEBPORT_DISCOVERY_INTERVAL", 2*time.Second)
 	cfg := &Config{
 		TraefikDynamicConfigPath: dynamicConfigPath,
 		TraefikEntryPoint:        getEnv("WEBPORT_TRAEFIK_ENTRYPOINT", "websecure"),
@@ -54,34 +63,73 @@ func Load() *Config {
 		LocalCADir:               getEnv("WEBPORT_LOCAL_CA_DIR", filepath.Join(filepath.Dir(dynamicConfigPath), "webport-pki")),
 		BaseDomain:               getEnv("WEBPORT_BASE_DOMAIN", ""),
 		ListenHost:               getEnv("WEBPORT_LISTEN_HOST", "127.0.0.1"),
-		Port:                     getEnvInt("WEBPORT_PORT", 8080),
-		DefaultTTL:               getEnvDuration("WEBPORT_DEFAULT_TTL", 300*time.Second),
-		TTLCheckInterval:         getEnvDuration("WEBPORT_TTL_CHECK_INTERVAL", 30*time.Second),
-		ShutdownTimeout:          getEnvDuration("WEBPORT_SHUTDOWN_TIMEOUT", 5*time.Second),
-		DiscoveryEnabled:         getEnvBool("WEBPORT_DISCOVERY_ENABLED", true),
-		DiscoveryInterval:        getEnvDuration("WEBPORT_DISCOVERY_INTERVAL", 2*time.Second),
+		Port:                     port,
+		DefaultTTL:               defaultTTL,
+		TTLCheckInterval:         checkInterval,
+		ShutdownTimeout:          shutdownTimeout,
+		DiscoveryEnabled:         discoveryEnabled,
+		DiscoveryInterval:        discoveryInterval,
 	}
 
+	var errs []error
+	errs = appendError(errs, portErr, ttlErr, checkErr, shutdownErr, discoveryErr, discoveryIntervalErr)
 	if cfg.BaseDomain == "" {
-		panic("WEBPORT_BASE_DOMAIN is required")
+		errs = append(errs, errors.New("WEBPORT_BASE_DOMAIN is required"))
+	} else if err := validateDomain(cfg.BaseDomain); err != nil {
+		errs = append(errs, fmt.Errorf("WEBPORT_BASE_DOMAIN: %w", err))
 	}
 	if cfg.TLSMode != TLSModeACME && cfg.TLSMode != TLSModeLocalCA {
-		panic("WEBPORT_TLS_MODE must be acme or local-ca")
+		errs = append(errs, errors.New("WEBPORT_TLS_MODE must be acme or local-ca"))
 	}
-
-	return cfg
+	if cfg.Port < 1 || cfg.Port > 65535 {
+		errs = append(errs, errors.New("WEBPORT_PORT must be between 1 and 65535"))
+	}
+	if cfg.DefaultTTL <= 0 {
+		errs = append(errs, errors.New("WEBPORT_DEFAULT_TTL must be positive"))
+	}
+	if cfg.TTLCheckInterval <= 0 {
+		errs = append(errs, errors.New("WEBPORT_TTL_CHECK_INTERVAL must be positive"))
+	}
+	if cfg.ShutdownTimeout <= 0 {
+		errs = append(errs, errors.New("WEBPORT_SHUTDOWN_TIMEOUT must be positive"))
+	}
+	if cfg.DiscoveryInterval <= 0 {
+		errs = append(errs, errors.New("WEBPORT_DISCOVERY_INTERVAL must be positive"))
+	}
+	if cfg.TraefikDynamicConfigPath == "" {
+		errs = append(errs, errors.New("WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH must not be empty"))
+	}
+	if cfg.TraefikEntryPoint == "" {
+		errs = append(errs, errors.New("WEBPORT_TRAEFIK_ENTRYPOINT must not be empty"))
+	}
+	if cfg.TLSMode == TLSModeACME && cfg.TraefikCertResolver == "" {
+		errs = append(errs, errors.New("WEBPORT_TRAEFIK_CERT_RESOLVER is required in acme mode"))
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return cfg, nil
 }
 
-func getEnvBool(key string, defaultVal bool) bool {
+func appendError(errs []error, items ...error) []error {
+	for _, err := range items {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errs
+}
+
+func getEnvBool(key string, defaultVal bool) (bool, error) {
 	val, ok := os.LookupEnv(key)
 	if !ok {
-		return defaultVal
+		return defaultVal, nil
 	}
 	parsed, err := strconv.ParseBool(val)
 	if err != nil {
-		return defaultVal
+		return false, fmt.Errorf("%s must be true or false", key)
 	}
-	return parsed
+	return parsed, nil
 }
 
 func getEnv(key, defaultVal string) string {
@@ -91,25 +139,47 @@ func getEnv(key, defaultVal string) string {
 	return defaultVal
 }
 
-func getEnvInt(key string, defaultVal int) int {
+func getEnvInt(key string, defaultVal int) (int, error) {
 	if val := os.Getenv(key); val != "" {
-		if i, err := strconv.Atoi(val); err == nil {
-			return i
+		i, err := strconv.Atoi(val)
+		if err != nil {
+			return 0, fmt.Errorf("%s must be an integer", key)
 		}
+		return i, nil
 	}
-	return defaultVal
+	return defaultVal, nil
 }
 
-func getEnvDuration(key string, defaultVal time.Duration) time.Duration {
+func getEnvDuration(key string, defaultVal time.Duration) (time.Duration, error) {
 	if val := os.Getenv(key); val != "" {
-		if d, err := time.ParseDuration(val); err == nil {
-			return d
+		d, err := time.ParseDuration(val)
+		if err != nil {
+			return 0, fmt.Errorf("%s must be a duration such as 30s or 2m", key)
 		}
+		return d, nil
 	}
-	return defaultVal
+	return defaultVal, nil
 }
 
 // GetListenAddr returns the address string for the HTTP server
 func (c *Config) GetListenAddr() string {
 	return net.JoinHostPort(c.ListenHost, strconv.Itoa(c.Port))
+}
+
+func validateDomain(value string) error {
+	value = strings.TrimSuffix(strings.ToLower(value), ".")
+	if value == "" || len(value) > 253 {
+		return errors.New("must be a valid DNS name")
+	}
+	for _, label := range strings.Split(value, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return errors.New("must be a valid DNS name")
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+				return errors.New("must contain only DNS letters, digits, dots, and dashes")
+			}
+		}
+	}
+	return nil
 }

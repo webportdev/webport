@@ -65,6 +65,7 @@ assert_file "$root/usr/local/libexec/webport/run-traefik"
 assert_file "$root/Library/LaunchDaemons/com.webport.traefik.plist"
 assert_file "$root/Library/LaunchDaemons/com.webport.webport.plist"
 assert_contains "$root/usr/local/etc/webport/webport.env" "WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH=/usr/local/etc/traefik/dynamic/webport.yml"
+assert_contains "$root/Library/LaunchDaemons/com.webport.webport.plist" "<string>_webport</string>"
 assert_contains "$LAUNCHCTL_LOG" "kickstart -k system/com.webport.traefik"
 assert_contains "$LAUNCHCTL_LOG" "kickstart -k system/com.webport.webport"
 

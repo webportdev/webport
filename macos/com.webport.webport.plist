@@ -8,6 +8,8 @@
 	<array>
 		<string>/usr/local/libexec/webport/run-webport</string>
 	</array>
+	<key>UserName</key>
+	<string>_webport</string>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>

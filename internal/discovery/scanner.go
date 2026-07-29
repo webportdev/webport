@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	routeEnv = "WEBPORT_ROUTE"
-	portEnv  = "WEBPORT_APP_PORT"
+	routeEnv       = "WEBPORT_ROUTE"
+	portEnv        = "WEBPORT_APP_PORT"
+	clientTokenEnv = "WEBPORT_CLIENT_TOKEN"
 )
 
 type listener struct {
@@ -35,6 +36,8 @@ type process struct {
 type Scanner struct {
 	BaseDomain   string
 	ProbeTimeout time.Duration
+	// ClientToken restricts scans to a user-run webport dev process tree.
+	ClientToken string
 }
 
 // Scan returns the complete currently discoverable process route set.
@@ -49,6 +52,9 @@ func (s Scanner) Scan(ctx context.Context) ([]route.Route, []error) {
 	}
 
 	for _, proc := range processes {
+		if s.ClientToken != "" && proc.env[clientTokenEnv] != s.ClientToken {
+			continue
+		}
 		spec := strings.TrimSpace(proc.env[routeEnv])
 		id, err := route.RouteIDFromString(spec)
 		if err != nil {

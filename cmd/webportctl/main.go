@@ -18,6 +18,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -35,17 +36,19 @@ var (
 	flagInterval  int
 	flagVerbose   bool
 	flagQueryConf bool
+	flagVersion   bool
 )
 
 func init() {
 	flag.StringVar(&flagProject, "project", getEnv("WEBPORT_PROJECT", ""), "Project name (auto-detected from git repo if not set)")
 	flag.StringVar(&flagBranch, "branch", getEnv("WEBPORT_BRANCH", ""), "Branch name (auto-detected from git if not set)")
 	flag.IntVar(&flagPort, "port", getEnvInt("APP_PORT", 0), "Local app port to proxy to (required)")
-	flag.IntVar(&flagTTL, "ttl", getEnvInt("WEBPORT_TTL", 300), "Route TTL in seconds")
+	flag.IntVar(&flagTTL, "ttl", getEnvInt("WEBPORT_TTL", 30), "Route TTL in seconds")
 	flag.StringVar(&flagAPIAddr, "api", getEnv("WEBPORT_API_ADDR", "localhost:8080"), "Webport API address (host:port)")
-	flag.IntVar(&flagInterval, "interval", getEnvInt("WEBPORT_INTERVAL", 60), "Heartbeat interval in seconds")
+	flag.IntVar(&flagInterval, "interval", getEnvInt("WEBPORT_INTERVAL", 10), "Heartbeat interval in seconds")
 	flag.BoolVar(&flagVerbose, "v", getEnvBool("WEBPORT_VERBOSE", false), "Verbose mode (log heartbeat messages)")
 	flag.BoolVar(&flagQueryConf, "query-config", false, "Query server configuration and exit")
+	flag.BoolVar(&flagVersion, "version", false, "Print version and exit")
 }
 
 func getEnv(key, defaultVal string) string {
@@ -75,6 +78,10 @@ func getEnvBool(key string, defaultVal bool) bool {
 func main() {
 	flag.Usage = usage
 	flag.Parse()
+	if flagVersion {
+		fmt.Println(buildVersion())
+		return
+	}
 
 	// Handle query-config subcommand
 	if flagQueryConf {
@@ -95,6 +102,9 @@ func main() {
 
 	if flagTTL <= 0 {
 		logFatal("Error: -ttl must be positive")
+	}
+	if flagInterval >= flagTTL {
+		logFatal("Error: -interval must be shorter than -ttl")
 	}
 
 	// Auto-detect project and branch from git if not set
@@ -160,6 +170,13 @@ func main() {
 	}
 
 	log.Println("Graceful shutdown complete")
+}
+
+func buildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
 }
 
 // queryConfig queries and prints the server configuration

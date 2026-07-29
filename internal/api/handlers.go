@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -33,24 +34,36 @@ const maxRequestBodyBytes = 1 << 20
 // Handlers manages HTTP endpoints
 type Handlers struct {
 	store   *route.Store
+	control *route.Controller
 	writer  traefik.Writer
 	cfg     *config.Config
 	publish func() error
+	started time.Time
 }
 
 // NewHandlers creates new handlers
 func NewHandlers(store *route.Store, writer traefik.Writer, cfg *config.Config) *Handlers {
-	return &Handlers{
-		store:  store,
-		writer: writer,
-		cfg:    cfg,
+	h := &Handlers{
+		store:   store,
+		writer:  writer,
+		cfg:     cfg,
+		started: time.Now(),
 	}
+	h.control = route.NewController(store, h.publishSnapshot)
+	return h
+}
+
+// WithController uses the daemon's shared route controller.
+func (h *Handlers) WithController(control *route.Controller) *Handlers {
+	h.control = control
+	return h
 }
 
 // WithPublisher uses publish for configuration updates. This allows all route
 // producers to serialize snapshots through one publisher.
 func (h *Handlers) WithPublisher(publish func() error) *Handlers {
 	h.publish = publish
+	h.control.SetPublisher(publish)
 	return h
 }
 
@@ -60,6 +73,10 @@ func (h *Handlers) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/routes/", h.handleRouteByID)
 	mux.HandleFunc("/config", h.handleConfig)
 	mux.HandleFunc("/health", h.handleHealth)
+	mux.HandleFunc("/ready", h.handleReady)
+	mux.HandleFunc("/status", h.handleStatus)
+	mux.HandleFunc("/v1/leases", h.handleLeases)
+	mux.HandleFunc("/v1/leases/", h.handleLeaseByID)
 }
 
 // handleRoutes handles POST /routes and GET /routes
@@ -76,7 +93,8 @@ func (h *Handlers) handleRoutes(w http.ResponseWriter, r *http.Request) {
 
 // handleRouteByID handles DELETE /routes/{id} and POST /routes/{id}/heartbeat
 func (h *Handlers) handleRouteByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodDelete {
+	parts := splitPath(r.URL.EscapedPath())
+	if r.Method == http.MethodDelete && len(parts) == 2 {
 		h.deleteRoute(w, r)
 	} else if r.Method == http.MethodPost && h.isHeartbeat(r.URL.EscapedPath()) {
 		h.heartbeat(w, r)
@@ -104,25 +122,10 @@ func (h *Handlers) registerRoute(w http.ResponseWriter, r *http.Request) {
 		ttl = time.Duration(req.TTL) * time.Second
 	}
 
-	domain := route.BuildDomain(h.cfg.BaseDomain, req.Project, req.Branch)
-
-	newRoute := route.Route{
-		Project:   req.Project,
-		Branch:    req.Branch,
-		Port:      req.Port,
-		Domain:    domain,
-		ExpiresAt: time.Now().Add(ttl),
-		Source:    route.SourceManual,
-	}
-
-	if err := h.store.Add(newRoute); err != nil {
-		log.Printf("ERROR: failed to add route: %v", err)
-		http.Error(w, "failed to register route", http.StatusInternalServerError)
+	newRoute, err := h.control.RegisterLegacy(req, h.cfg.BaseDomain, time.Now(), ttl)
+	if err != nil {
+		h.writeControlError(w, err)
 		return
-	}
-
-	if err := h.publishTraefikConfig(); err != nil {
-		log.Printf("WARN: failed to publish Traefik configuration: %v", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -153,13 +156,9 @@ func (h *Handlers) deleteRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.store.Delete(id) {
-		http.Error(w, "route not found", http.StatusNotFound)
+	if err := h.control.DeleteLegacy(id, time.Now(), h.cfg.BaseDomain); err != nil {
+		h.writeControlError(w, err)
 		return
-	}
-
-	if err := h.publishTraefikConfig(); err != nil {
-		log.Printf("WARN: failed to publish Traefik configuration: %v", err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -170,12 +169,6 @@ func (h *Handlers) heartbeat(w http.ResponseWriter, r *http.Request) {
 	id, ok := h.parseRouteID(r.URL.EscapedPath())
 	if !ok {
 		http.Error(w, "invalid route ID", http.StatusBadRequest)
-		return
-	}
-
-	existingRoute, ok := h.store.Get(id)
-	if !ok {
-		http.Error(w, "route not found", http.StatusNotFound)
 		return
 	}
 
@@ -192,15 +185,13 @@ func (h *Handlers) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ttl := h.cfg.DefaultTTL
+	var ttl time.Duration
 	if req.TTL > 0 {
 		ttl = time.Duration(req.TTL) * time.Second
 	}
-
-	existingRoute.ExpiresAt = time.Now().Add(ttl)
-	if err := h.store.Add(existingRoute); err != nil {
-		log.Printf("ERROR: failed to update route: %v", err)
-		http.Error(w, "failed to update route", http.StatusInternalServerError)
+	existingRoute, err := h.control.HeartbeatLegacy(id, ttl, h.cfg.DefaultTTL, time.Now(), h.cfg.BaseDomain)
+	if err != nil {
+		h.writeControlError(w, err)
 		return
 	}
 
@@ -212,9 +203,166 @@ func (h *Handlers) heartbeat(w http.ResponseWriter, r *http.Request) {
 
 // handleHealth handles GET /health
 func (h *Handlers) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
+}
+
+func (h *Handlers) handleReady(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.control.Ready() {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("OK"))
+}
+
+type StatusResponse struct {
+	Version         string    `json:"version"`
+	UptimeSeconds   int64     `json:"uptime_seconds"`
+	TLSMode         string    `json:"tls_mode"`
+	RouteCount      int       `json:"route_count"`
+	LeaseCount      int       `json:"lease_count"`
+	Revision        uint64    `json:"revision"`
+	AppliedRevision uint64    `json:"applied_revision"`
+	LastPublished   time.Time `json:"last_published,omitempty"`
+	LastError       string    `json:"last_error,omitempty"`
+	Ready           bool      `json:"ready"`
+}
+
+func (h *Handlers) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	status := h.control.Status()
+	resp := StatusResponse{
+		Version: buildVersion(), UptimeSeconds: int64(time.Since(h.started).Seconds()),
+		TLSMode: h.cfg.TLSMode, RouteCount: h.store.Count(), LeaseCount: status.LeaseCount,
+		Revision: status.Revision, AppliedRevision: status.AppliedRevision,
+		LastPublished: status.LastPublished, LastError: status.LastError,
+		Ready: h.control.Ready(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("ERROR: failed to encode status response: %v", err)
+	}
+}
+
+type leaseRequest struct {
+	ClientID string `json:"client_id"`
+	Project  string `json:"project"`
+	Branch   string `json:"branch"`
+	Port     int    `json:"port"`
+	TTL      int    `json:"ttl"`
+}
+
+type leaseResponse struct {
+	LeaseID string      `json:"lease_id"`
+	Route   route.Route `json:"route"`
+}
+
+func (h *Handlers) handleLeases(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req leaseRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.ClientID == "" || len(req.ClientID) > 128 {
+		http.Error(w, "client_id must contain between 1 and 128 characters", http.StatusBadRequest)
+		return
+	}
+	register := route.RegisterRequest{Project: req.Project, Branch: req.Branch, Port: req.Port, TTL: req.TTL}
+	if err := register.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ttl := h.cfg.DefaultTTL
+	if req.TTL > 0 {
+		ttl = time.Duration(req.TTL) * time.Second
+	}
+	claim, registered, created, err := h.control.CreateLease(req.ClientID, register, h.cfg.BaseDomain, time.Now(), ttl)
+	if err != nil {
+		h.writeControlError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if created {
+		w.WriteHeader(http.StatusCreated)
+	}
+	if err := json.NewEncoder(w).Encode(leaseResponse{LeaseID: claim.LeaseID, Route: registered}); err != nil {
+		log.Printf("ERROR: failed to encode lease response: %v", err)
+	}
+}
+
+func (h *Handlers) handleLeaseByID(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.EscapedPath(), "/v1/leases/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		http.Error(w, "invalid lease ID", http.StatusBadRequest)
+		return
+	}
+	leaseID, err := url.PathUnescape(parts[0])
+	if err != nil {
+		http.Error(w, "invalid lease ID", http.StatusBadRequest)
+		return
+	}
+	switch {
+	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "heartbeat":
+		var req route.HeartbeatRequest
+		if err := decodeOptionalJSON(w, r, &req); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if err := req.Validate(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var ttl time.Duration
+		if req.TTL > 0 {
+			ttl = time.Duration(req.TTL) * time.Second
+		}
+		claim, registered, err := h.control.HeartbeatLease(leaseID, ttl, time.Now(), h.cfg.BaseDomain)
+		if err != nil {
+			h.writeControlError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(leaseResponse{LeaseID: claim.LeaseID, Route: registered})
+	case r.Method == http.MethodDelete && len(parts) == 1:
+		if err := h.control.DeleteLease(leaseID, time.Now(), h.cfg.BaseDomain); err != nil {
+			h.writeControlError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handlers) writeControlError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, route.ErrNotFound):
+		http.Error(w, "route not found", http.StatusNotFound)
+	case errors.Is(err, route.ErrConflict):
+		http.Error(w, err.Error(), http.StatusConflict)
+	default:
+		log.Printf("ERROR: route update failed: %v", err)
+		http.Error(w, "failed to apply route configuration", http.StatusServiceUnavailable)
+	}
 }
 
 // ConfigResponse represents the server configuration response
@@ -248,7 +396,7 @@ func (h *Handlers) handleConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // publishTraefikConfig regenerates the file-provider configuration.
-func (h *Handlers) publishTraefikConfig() error {
+func (h *Handlers) publishSnapshot() error {
 	if h.publish != nil {
 		return h.publish()
 	}
@@ -264,10 +412,17 @@ func (h *Handlers) publishTraefikConfig() error {
 	return h.writer.Write(content)
 }
 
+func buildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
+}
+
 // isHeartbeat checks if the path is a heartbeat request
 func (h *Handlers) isHeartbeat(path string) bool {
 	parts := splitPath(path)
-	return len(parts) >= 3 && parts[2] == "heartbeat"
+	return len(parts) == 3 && parts[2] == "heartbeat"
 }
 
 // parseRouteID extracts RouteID from URL path
@@ -293,17 +448,41 @@ func (h *Handlers) parseRouteID(path string) (route.RouteID, bool) {
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	defer r.Body.Close()
-	return json.NewDecoder(r.Body).Decode(dst)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request body must contain one JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	defer r.Body.Close()
-	err := json.NewDecoder(r.Body).Decode(dst)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	err := decoder.Decode(dst)
 	if errors.Is(err, io.EOF) {
 		return io.EOF
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request body must contain one JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 // splitPath splits a URL path into components

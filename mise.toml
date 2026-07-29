@@ -153,27 +153,27 @@ echo "  sudo systemctl enable --now webport-stack.target"
 
 [tasks.enable]
 description = "Enable the webport systemd stack"
-run = "systemctl enable webport-stack.target"
+run = "sudo systemctl enable --now webport-stack.target"
 
 [tasks.start]
 description = "Start the webport systemd stack"
-run = "systemctl start webport-stack.target"
+run = "sudo systemctl start webport-stack.target"
 
 [tasks.stop]
 description = "Stop the webport systemd stack"
-run = "systemctl stop webport-stack.target"
+run = "sudo systemctl stop webport-stack.target"
 
 [tasks.restart]
-description = "Restart the webport systemd service"
-run = "systemctl restart webport.service"
+description = "Restart the complete webport proxy stack"
+run = "sudo systemctl restart webport-stack.target"
 
 [tasks.status]
-description = "Show webport systemd service status"
-run = "systemctl status webport.service"
+description = "Show webport stack status"
+run = "sudo systemctl status webport-stack.target webport.service traefik.service"
 
 [tasks.logs]
 description = "Follow webport systemd service logs"
-run = "journalctl -u webport.service -f"
+run = "sudo journalctl -u webport.service -u traefik.service -f"
 
 [tasks.uninstall]
 description = "Stop services and remove installed webport files"

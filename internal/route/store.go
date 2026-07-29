@@ -77,6 +77,35 @@ func (s *Store) List() []Route {
 	return routes
 }
 
+// SetManual atomically replaces all manually registered routes while
+// preserving process-discovered routes. It returns the previous manual set.
+func (s *Store) SetManual(desired []Route) []Route {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	previous := make([]Route, 0)
+	next := make(map[RouteID]Route, len(s.routes)+len(desired))
+	for id, existing := range s.routes {
+		if existing.IsDiscovered() {
+			next[id] = existing
+		} else {
+			previous = append(previous, existing)
+		}
+	}
+	for _, candidate := range desired {
+		id := RouteID{Project: candidate.Project, Branch: candidate.Branch}
+		if existing, ok := s.routes[id]; ok && candidate.CreatedAt.IsZero() {
+			candidate.CreatedAt = existing.CreatedAt
+		}
+		if candidate.CreatedAt.IsZero() {
+			candidate.CreatedAt = time.Now()
+		}
+		next[id] = candidate
+	}
+	s.routes = next
+	return previous
+}
+
 // DeleteExpired removes and returns expired routes
 func (s *Store) DeleteExpired(now time.Time) []Route {
 	s.mu.Lock()

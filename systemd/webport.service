@@ -8,11 +8,11 @@ PartOf=webport-stack.target
 [Service]
 Type=notify
 NotifyAccess=all
-User=root
-Group=root
+User=webport
+Group=webport
 EnvironmentFile=/etc/webport/webport.env
 WatchdogSec=30
-ExecStart=/usr/local/bin/webport
+ExecStart=/usr/local/bin/webport daemon
 TimeoutStopSec=10
 Restart=on-failure
 RestartSec=5

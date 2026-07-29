@@ -10,6 +10,7 @@ import (
 const (
 	SourceManual  = "manual"
 	SourceProcess = "process"
+	MaxTTLSeconds = 24 * 60 * 60
 )
 
 // validNamePattern matches valid project/branch name components
@@ -109,8 +110,8 @@ func (r *RegisterRequest) Validate() error {
 	if r.Port < 1 || r.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535")
 	}
-	if r.TTL < 0 {
-		return fmt.Errorf("ttl must be non-negative")
+	if r.TTL < 0 || r.TTL > MaxTTLSeconds {
+		return fmt.Errorf("ttl must be between 0 and %d seconds", MaxTTLSeconds)
 	}
 	return nil
 }
@@ -122,8 +123,8 @@ type HeartbeatRequest struct {
 
 // Validate checks if the heartbeat request is valid.
 func (r *HeartbeatRequest) Validate() error {
-	if r.TTL < 0 {
-		return fmt.Errorf("ttl must be non-negative")
+	if r.TTL < 0 || r.TTL > MaxTTLSeconds {
+		return fmt.Errorf("ttl must be between 0 and %d seconds", MaxTTLSeconds)
 	}
 	return nil
 }
