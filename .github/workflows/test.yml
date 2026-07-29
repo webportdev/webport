@@ -27,6 +27,14 @@ jobs:
         run: |
           ! grep -E 'WEBPORT_CADDY|WEBPORT_TLS_DNS|internal/caddy|Caddyfile' \
             README.md verify.md scripts/README.md MIGRATION.md
+      - name: Validate documented bootstrap branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -R 'raw.githubusercontent.com/webportdev/webport/main/' \
+            README.md scripts/README.md
+          grep -q 'raw.githubusercontent.com/webportdev/webport/master/scripts/bootstrap-install.sh' \
+            README.md
       - name: Test real Traefik file-provider updates
         shell: bash
         run: |

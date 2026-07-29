@@ -3,7 +3,7 @@
 Use the bootstrap installer for the local-first native installation:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/webportdev/webport/main/scripts/bootstrap-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/webportdev/webport/master/scripts/bootstrap-install.sh | bash
 ```
 
 From a checkout:

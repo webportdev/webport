@@ -16,7 +16,7 @@ file-provider configuration. Traefik performs the actual HTTPS proxying.
 Install as a regular user:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/webportdev/webport/main/scripts/bootstrap-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/webportdev/webport/master/scripts/bootstrap-install.sh | bash
 ```
 
 The default installation:
@@ -49,7 +49,7 @@ re-register.
 For an automated local installation:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/webportdev/webport/main/scripts/bootstrap-install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/webportdev/webport/master/scripts/bootstrap-install.sh | bash -s -- \
   --local --trust-local-ca --non-interactive --yes
 ```
 
@@ -91,7 +91,7 @@ credentials file must contain the raw token—not an HTTP `Bearer` prefix:
 printf 'CF_DNS_API_TOKEN=replace-with-raw-token\n' >cloudflare.env
 chmod 600 cloudflare.env
 
-curl -fsSL https://raw.githubusercontent.com/webportdev/webport/main/scripts/bootstrap-install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/webportdev/webport/master/scripts/bootstrap-install.sh | bash -s -- \
   --public \
   --provider cloudflare \
   --base-domain dev.example.com \
