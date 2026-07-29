@@ -78,6 +78,20 @@ assert_contains "$SYSTEMCTL_LOG" "restart traefik.service"
 assert_contains "$SYSTEMCTL_LOG" "restart webport.service"
 assert_contains "$SYSTEMCTL_LOG" "enable --now webport-stack.target"
 
+installed_installer="$root/usr/local/libexec/webport/installer/scripts/install.sh"
+webport_release_dir="$tmp/webport-release"
+mkdir -p "$webport_release_dir"
+tar -C "$artifacts" -czf "$webport_release_dir/webport_vtest_linux_amd64.tar.gz" \
+	webport webportctl webport-dns
+root="$tmp/installed-command"
+WEBPORT_INSTALL_ROOT="$root" "$installed_installer" \
+	--mode full --tls-mode local-ca --base-domain webport.localhost \
+	--version vtest --release-base-url "file://$webport_release_dir" \
+	--traefik-source local --artifact-dir "$artifacts" --non-interactive --yes
+assert_file "$root/usr/local/bin/webport"
+assert_file "$root/usr/local/bin/webportctl"
+assert_file "$root/usr/local/bin/webport-dns"
+
 root="$tmp/existing-traefik"
 mkdir -p "$root/usr/local/bin"
 cp "$artifacts/traefik" "$root/usr/local/bin/traefik"

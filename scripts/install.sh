@@ -194,7 +194,13 @@ if (( CONFIGURE_DNS )) && [[ -z "$PROVIDER" ]]; then
 fi
 
 if [[ -z "$WEBPORT_SOURCE" ]]; then
-	[[ "${WEBPORT_BOOTSTRAP:-0}" == 1 ]] && WEBPORT_SOURCE=local || WEBPORT_SOURCE=build
+	if [[ "${WEBPORT_BOOTSTRAP:-0}" == 1 ]]; then
+		WEBPORT_SOURCE=local
+	elif [[ -d "$REPO_DIR/cmd/webport" ]]; then
+		WEBPORT_SOURCE=build
+	else
+		WEBPORT_SOURCE=release
+	fi
 fi
 [[ "$WEBPORT_SOURCE" =~ ^(release|local|build)$ ]] || die "invalid webport source: $WEBPORT_SOURCE"
 
@@ -563,10 +569,10 @@ backup_managed_traefik() {
 
 backup_file() {
 	local source=$1 destination=$2
-	if [[ -r "$source" ]]; then
-		cp "$source" "$destination"
-	elif [[ "$ROOT" == / ]]; then
+	if [[ "$ROOT" == / ]]; then
 		privileged cat "$source" >"$destination"
+	elif [[ -r "$source" ]]; then
+		cp "$source" "$destination"
 	else
 		return 1
 	fi
