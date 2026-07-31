@@ -20,6 +20,10 @@ const (
 	clientTokenEnv = "WEBPORT_CLIENT_TOKEN"
 )
 
+func isDiscoveryEnvKey(key string) bool {
+	return key == routeEnv || key == portEnv || key == clientTokenEnv
+}
+
 type listener struct {
 	host string
 	port int

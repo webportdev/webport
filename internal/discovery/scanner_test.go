@@ -86,13 +86,13 @@ func TestParseDarwinProcArgs(t *testing.T) {
 	raw := make([]byte, 4)
 	binary.NativeEndian.PutUint32(raw, 2)
 	raw = append(raw, []byte("/usr/local/bin/node\x00\x00node\x00server.js\x00")...)
-	raw = append(raw, []byte("PATH=/usr/bin\x00WEBPORT_ROUTE=app:main\x00WEBPORT_APP_PORT=5173\x00\x00")...)
+	raw = append(raw, []byte("PATH=/usr/bin\x00WEBPORT_ROUTE=app:main\x00WEBPORT_APP_PORT=5173\x00WEBPORT_CLIENT_TOKEN=token-123\x00\x00")...)
 
 	got, err := parseDarwinProcArgs(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got[routeEnv] != "app:main" || got[portEnv] != "5173" {
+	if got[routeEnv] != "app:main" || got[portEnv] != "5173" || got[clientTokenEnv] != "token-123" {
 		t.Fatalf("environment = %#v", got)
 	}
 }

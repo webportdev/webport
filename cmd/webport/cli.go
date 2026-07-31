@@ -193,74 +193,79 @@ func runDev(args []string) error {
 	if values.port > 0 {
 		command.Env = append(command.Env, fmt.Sprintf("WEBPORT_APP_PORT=%d", values.port))
 	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+
 	configureChildProcess(command)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start development command: %w", err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- command.Wait() }()
+	child := trackChildProcess(command)
 
 	cleanupChild := true
 	defer func() {
-		if cleanupChild && command.Process != nil {
-			_ = signalChildProcess(command, syscall.SIGTERM)
+		if cleanupChild {
+			_ = child.terminate(syscall.SIGTERM, childShutdownGracePeriod)
 		}
 	}()
 
+	var shutdownSignal os.Signal
 	if values.port == 0 {
-		port, err := waitForListener(token, values.project, values.branch, startupTimeout, done)
+		var port int
+		port, shutdownSignal, err = waitForListener(
+			token, values.project, values.branch, startupTimeout, child, signals,
+		)
 		if err != nil {
-			_ = signalChildProcess(command, syscall.SIGTERM)
-			select {
-			case <-done:
-			case <-time.After(2 * time.Second):
-			}
+			_ = child.terminate(syscall.SIGTERM, childShutdownGracePeriod)
+			cleanupChild = false
 			return err
 		}
 		values.port = port
-	} else if err := waitForPort(values.port, startupTimeout, done); err != nil {
-		_ = signalChildProcess(command, syscall.SIGTERM)
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
+	} else {
+		shutdownSignal, err = waitForPort(values.port, startupTimeout, child, signals)
+		if err != nil {
+			_ = child.terminate(syscall.SIGTERM, childShutdownGracePeriod)
+			cleanupChild = false
+			return err
 		}
-		return err
+	}
+	if shutdownSignal != nil {
+		_ = child.terminate(shutdownSignal, childShutdownGracePeriod)
+		cleanupChild = false
+		return nil
 	}
 
 	manager, err := newClientManager(values)
 	if err != nil {
+		_ = child.terminate(syscall.SIGTERM, childShutdownGracePeriod)
+		cleanupChild = false
 		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := manager.Start(ctx); err != nil {
-		_ = signalChildProcess(command, syscall.SIGTERM)
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-		}
+		_ = child.terminate(syscall.SIGTERM, childShutdownGracePeriod)
+		cleanupChild = false
 		return err
 	}
 
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(signals)
-
+	var commandErr error
 	select {
 	case sig := <-signals:
-		_ = signalChildProcess(command, sig)
-		err = <-done
-	case err = <-done:
+		_ = child.terminate(sig, childShutdownGracePeriod)
+	case <-child.done:
+		commandErr = child.terminate(syscall.SIGTERM, childShutdownGracePeriod)
 	}
 	cleanupChild = false
 	cancel()
 	releaseErr := manager.Stop()
-	if err != nil {
+	if commandErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(commandErr, &exitErr) {
 			return fmt.Errorf("development command exited with status %d", exitErr.ExitCode())
 		}
-		return err
+		return commandErr
 	}
 	return releaseErr
 }
@@ -273,7 +278,12 @@ func newClientManager(values routeFlags) (*client.Manager, error) {
 	})
 }
 
-func waitForListener(token, project, branch string, timeout time.Duration, done <-chan error) (int, error) {
+func waitForListener(
+	token, project, branch string,
+	timeout time.Duration,
+	child *childProcess,
+	signals <-chan os.Signal,
+) (int, os.Signal, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	scanner := discovery.Scanner{BaseDomain: "webport.invalid", ClientToken: token}
@@ -291,47 +301,58 @@ func waitForListener(token, project, branch string, timeout time.Duration, done 
 		}
 		if len(ports) == 1 {
 			for port := range ports {
-				return port, nil
+				return port, nil, nil
 			}
 		}
 		if len(ports) > 1 {
-			return 0, errors.New("multiple HTTP listeners found; select one with --port")
+			return 0, nil, errors.New("multiple HTTP listeners found; select one with --port")
 		}
 		select {
-		case err := <-done:
+		case sig := <-signals:
+			return 0, sig, nil
+		case <-child.done:
+			err := child.wait()
 			if err != nil {
-				return 0, fmt.Errorf("development command exited before opening an HTTP listener: %w", err)
+				return 0, nil, fmt.Errorf("development command exited before opening an HTTP listener: %w", err)
 			}
-			return 0, errors.New("development command exited before opening an HTTP listener")
+			return 0, nil, errors.New("development command exited before opening an HTTP listener")
 		case <-ctx.Done():
 			if len(lastErrors) > 0 {
-				return 0, fmt.Errorf("no HTTP listener found before timeout: %v", lastErrors[len(lastErrors)-1])
+				return 0, nil, fmt.Errorf("no HTTP listener found before timeout: %v", lastErrors[len(lastErrors)-1])
 			}
-			return 0, errors.New("no HTTP listener found before timeout; use --port to select it")
+			return 0, nil, errors.New("no HTTP listener found before timeout; use --port to select it")
 		case <-ticker.C:
 		}
 	}
 }
 
-func waitForPort(port int, timeout time.Duration, done <-chan error) error {
+func waitForPort(
+	port int,
+	timeout time.Duration,
+	child *childProcess,
+	signals <-chan os.Signal,
+) (os.Signal, error) {
 	deadline := time.Now().Add(timeout)
 	address := net.JoinHostPort("127.0.0.1", fmt.Sprint(port))
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
-			return nil
+			return nil, nil
 		}
 		select {
-		case err := <-done:
+		case sig := <-signals:
+			return sig, nil
+		case <-child.done:
+			err := child.wait()
 			if err != nil {
-				return fmt.Errorf("development command exited before port %d opened: %w", port, err)
+				return nil, fmt.Errorf("development command exited before port %d opened: %w", port, err)
 			}
-			return fmt.Errorf("development command exited before port %d opened", port)
+			return nil, fmt.Errorf("development command exited before port %d opened", port)
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("port %d did not start listening before timeout", port)
+	return nil, fmt.Errorf("port %d did not start listening before timeout", port)
 }
 
 func requireReady(api string) error {

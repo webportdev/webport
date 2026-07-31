@@ -42,7 +42,7 @@ func parseDarwinProcArgs(raw []byte) (map[string]string, error) {
 			break
 		}
 		key, content, found := strings.Cut(value, "=")
-		if found && (key == routeEnv || key == portEnv) {
+		if found && isDiscoveryEnvKey(key) {
 			env[key] = content
 		}
 		offset = next

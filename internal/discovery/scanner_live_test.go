@@ -23,6 +23,7 @@ func TestLiveProcessDiscovery(t *testing.T) {
 	command.Env = append(os.Environ(),
 		"WEBPORT_DISCOVERY_HELPER=1",
 		"WEBPORT_ROUTE=live-test:main",
+		"WEBPORT_CLIENT_TOKEN=live-test-token",
 	)
 	stdout, err := command.StdoutPipe()
 	if err != nil {
@@ -51,7 +52,11 @@ func TestLiveProcessDiscovery(t *testing.T) {
 		t.Fatal("helper did not become ready")
 	}
 
-	scanner := Scanner{BaseDomain: "example.com", ProbeTimeout: time.Second}
+	scanner := Scanner{
+		BaseDomain:   "example.com",
+		ProbeTimeout: time.Second,
+		ClientToken:  "live-test-token",
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		routes, _ := scanner.Scan(context.Background())

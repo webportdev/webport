@@ -56,7 +56,7 @@ func readEnvironment(path string) (map[string]string, error) {
 	env := make(map[string]string)
 	for _, entry := range strings.Split(string(data), "\x00") {
 		key, value, ok := strings.Cut(entry, "=")
-		if ok && (key == routeEnv || key == portEnv) {
+		if ok && isDiscoveryEnvKey(key) {
 			env[key] = value
 		}
 	}
