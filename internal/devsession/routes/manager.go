@@ -86,6 +86,17 @@ func (m *Manager) Activate(ctx context.Context, route plan.Route) error {
 		return err
 	}
 	heartbeatCtx, cancel := context.WithCancel(context.Background())
+	lease.OnRecovery = func(err error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if entry.State == Released {
+			return
+		}
+		entry.State, entry.Error = Active, ""
+		if err != nil {
+			entry.State, entry.Error = Recovering, err.Error()
+		}
+	}
 	m.mu.Lock()
 	entry.lease, entry.cancel = lease, cancel
 	entry.State = Active
@@ -96,10 +107,17 @@ func (m *Manager) Activate(ctx context.Context, route plan.Route) error {
 			return
 		}
 		m.mu.Lock()
+		if heartbeatCtx.Err() != nil || entry.State == Released {
+			m.mu.Unlock()
+			return
+		}
 		entry.State = Failed
 		entry.Error = err.Error()
 		m.mu.Unlock()
-		m.failures <- Failure{Service: route.Service, Required: !route.Optional, Error: err}
+		select {
+		case m.failures <- Failure{Service: route.Service, Required: !route.Optional, Error: err}:
+		case <-heartbeatCtx.Done():
+		}
 	}()
 	return nil
 }

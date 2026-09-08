@@ -26,6 +26,26 @@ func TestSelectListenerFindsHTTPAmongMultiplePorts(t *testing.T) {
 	}
 }
 
+func TestConfiguredSessionDoesNotBypassReadinessThroughDiscovery(t *testing.T) {
+	proc := process{env: map[string]string{routeEnv: "app:main", sessionManagedEnv: "1", clientTokenEnv: "session-token"}}
+	if (Scanner{}).acceptsProcess(proc) {
+		t.Fatal("daemon scanner accepted a supervisor-managed child")
+	}
+	if !(Scanner{ClientToken: "session-token"}).acceptsProcess(proc) {
+		t.Fatal("explicit owner scan was rejected")
+	}
+	if (Scanner{ClientToken: "different"}).acceptsProcess(proc) {
+		t.Fatal("foreign client scan accepted a child")
+	}
+	delete(proc.env, sessionManagedEnv)
+	if !(Scanner{}).acceptsProcess(proc) {
+		t.Fatal("ordinary opted-in discovery was disabled")
+	}
+	if !isDiscoveryEnvKey(sessionManagedEnv) {
+		t.Fatal("platform environment readers discard the session marker")
+	}
+}
+
 func TestSelectListenerRequiresOverrideForMultipleHTTPPorts(t *testing.T) {
 	proc := process{
 		pid: 42,

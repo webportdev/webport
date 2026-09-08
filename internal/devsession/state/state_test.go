@@ -97,6 +97,9 @@ func TestAcquireRemovesStaleLiveStateWithoutSignalingRecordedPID(t *testing.T) {
 
 func TestProcessIdentityDoesNotTrustOnlyAReusedPID(t *testing.T) {
 	identity := currentProcessIdentity(os.Getpid())
+	if identity.StartTime == "" {
+		t.Fatal("process identity lacks a PID-reuse guard")
+	}
 	if !processAlive(identity) {
 		t.Fatal("current process is not alive")
 	}

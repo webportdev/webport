@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -124,8 +125,82 @@ func TestCommandHelper(t *testing.T) {
 		for {
 			time.Sleep(time.Hour)
 		}
+	case "signal":
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGHUP)
+		_, _ = os.Stdout.WriteString("ready\n")
+		<-signals
+		time.Sleep(150 * time.Millisecond)
+		_, _ = os.Stdout.WriteString("graceful\n")
+		os.Exit(0)
+	case "ignore":
+		signal.Ignore(syscall.SIGTERM)
+		_, _ = os.Stdout.WriteString("ready\n")
+		for {
+			time.Sleep(time.Hour)
+		}
 	default:
 		t.Fatalf("unknown helper mode %q", os.Getenv(helperEnv))
+	}
+}
+
+func TestCancellationUsesConfiguredSignalAndGrace(t *testing.T) {
+	for _, mode := range []string{"signal", "ignore"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			sink := &MemorySink{}
+			grace := 500 * time.Millisecond
+			sig := syscall.SIGHUP
+			if mode == "ignore" {
+				grace = 30 * time.Millisecond
+				sig = syscall.SIGTERM
+			}
+			process, err := (Runner{}).Start(ctx, Spec{
+				Command: []string{os.Args[0], "-test.run=TestCommandHelper"}, Env: append(os.Environ(), helperEnv+"="+mode),
+				Sink: sink, StopSignal: func() os.Signal { return sig }, GracePeriod: grace,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer process.Terminate(os.Kill, time.Millisecond)
+			deadline := time.Now().Add(3 * time.Second)
+			for !hasEvent(sink.Events(), "stdout", "ready", true) {
+				if time.Now().After(deadline) {
+					t.Fatal("helper did not start")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			started := time.Now()
+			cancel()
+			select {
+			case <-process.Done():
+			case <-time.After(time.Second):
+				t.Fatal("configured grace period was ignored")
+			}
+			if mode == "signal" && !hasEvent(sink.Events(), "stdout", "graceful", true) {
+				t.Fatal("signal or graceful cleanup was ignored")
+			}
+			if mode == "ignore" && time.Since(started) > 500*time.Millisecond {
+				t.Fatal("force kill was late")
+			}
+		})
+	}
+}
+
+func TestExitedLeaderDoesNotWaitForeverForDescendantPipes(t *testing.T) {
+	process, err := (Runner{}).Start(context.Background(), Spec{Command: []string{"sh", "-c", "sleep 10 & exit 0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer process.Terminate(os.Kill, time.Millisecond)
+	select {
+	case <-process.Done():
+	case <-time.After(time.Second):
+		t.Fatal("leader exit blocked by descendant output pipes")
+	}
+	if err := process.Wait(); err != nil {
+		t.Fatal(err)
 	}
 }
 

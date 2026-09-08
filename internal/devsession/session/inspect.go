@@ -18,7 +18,6 @@ import (
 	"github.com/webportdev/webport/internal/devsession/daemon"
 	"github.com/webportdev/webport/internal/devsession/identity"
 	"github.com/webportdev/webport/internal/devsession/plan"
-	"github.com/webportdev/webport/internal/devsession/ports"
 	"github.com/webportdev/webport/internal/devsession/secrets"
 	"github.com/webportdev/webport/internal/devsession/state"
 )
@@ -32,39 +31,48 @@ func InspectConfig(ctx context.Context, options Options) (plan.Plan, error) {
 	if err != nil {
 		return plan.Plan{}, err
 	}
-	owners := make(map[string]string)
-	for name, service := range cfg.Services {
-		if service.Route != nil {
-			owners[service.Route.Port] = name
+	if options.PreferLive {
+		store, err := state.NewStore(id.WorktreeRoot, "")
+		if err != nil {
+			return plan.Plan{}, err
+		}
+		live, err := store.ReadLive()
+		if err == nil {
+			response, err := state.Dial(ctx, live.ControlPath, live.ControlToken, state.Request{
+				Operation: "config", Payload: map[string]any{"structured": true, "show_sensitive": options.ShowSensitive},
+			})
+			if err != nil {
+				return plan.Plan{}, err
+			}
+			if !response.OK {
+				return plan.Plan{}, fmt.Errorf("inspect live config: %s", response.Error)
+			}
+			encoded, err := json.Marshal(response.Payload["plan"])
+			if err != nil {
+				return plan.Plan{}, err
+			}
+			var p plan.Plan
+			if err := json.Unmarshal(encoded, &p); err != nil {
+				return plan.Plan{}, err
+			}
+			return p, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return plan.Plan{}, err
 		}
 	}
-	allocations, err := ports.Resolve(ctx, cfg.Ports, owners, ports.Options{})
-	if err != nil {
-		return plan.Plan{}, err
-	}
-	portValues := make(map[string]int)
-	for name, allocation := range allocations {
-		if !allocation.Discovered {
-			portValues[name] = allocation.Port
-		}
+	if options.API == "" {
+		options.API = "http://127.0.0.1:8080"
 	}
 	client, err := daemon.NewHTTPClient(options.API, nil, nil)
 	if err != nil {
 		return plan.Plan{}, err
 	}
-	profile := options.Profile
-	if profile == "" && options.Service == "" {
-		profile = "default"
-	}
-	primary := options.Service
-	if primary == "" && profile != "" && len(cfg.Profiles[profile].Services) > 0 {
-		primary = cfg.Profiles[profile].Services[0]
-	}
-	routes, err := plan.ResolveRoutes(ctx, cfg, id, client, primary, portValues)
+	p, environments, err := prepare(ctx, cfg, id, options, client)
 	if err != nil {
 		return plan.Plan{}, err
 	}
-	return plan.Build(cfg, id, plan.BuildOptions{Profile: profile, Service: options.Service, PortSpecs: cfg.Ports, PortValues: allocations, Routes: routes})
+	return inspectEnvironments(p, environments), nil
 }
 
 func Status(options Options) (any, error) {

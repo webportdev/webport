@@ -14,12 +14,14 @@ import (
 )
 
 type Spec struct {
-	Command   []string
-	Shell     string
-	ShellPath string
-	Dir       string
-	Env       []string
-	Sink      OutputSink
+	Command     []string
+	Shell       string
+	ShellPath   string
+	Dir         string
+	Env         []string
+	Sink        OutputSink
+	StopSignal  func() os.Signal
+	GracePeriod time.Duration
 }
 
 type OutputEvent struct {
@@ -63,18 +65,22 @@ type Result struct {
 }
 
 type Process struct {
-	command *exec.Cmd
-	done    chan struct{}
-	started time.Time
-	mu      sync.Mutex
-	waitErr error
-	result  Result
-	cleaned bool
+	command     *exec.Cmd
+	done        chan struct{}
+	started     time.Time
+	mu          sync.Mutex
+	waitErr     error
+	result      Result
+	cleaned     bool
+	terminateMu sync.Mutex
 }
 
 type Runner struct{}
 
 func (Runner) Start(ctx context.Context, spec Spec) (*Process, error) {
+	if ctx != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	cmd, err := buildCommand(spec)
 	if err != nil {
 		return nil, err
@@ -108,23 +114,38 @@ func (Runner) Start(ctx context.Context, spec Spec) (*Process, error) {
 	process := &Process{command: cmd, done: make(chan struct{}), started: started, result: Result{PID: cmd.Process.Pid, StartTime: started}}
 	var output sync.WaitGroup
 	output.Add(2)
-	go func() { defer output.Done(); capturePipe("stdout", stdout, spec.Sink) }()
-	go func() { defer output.Done(); capturePipe("stderr", stderr, spec.Sink) }()
+	go func() { defer output.Done(); defer stdout.Close(); capturePipe("stdout", stdout, spec.Sink) }()
+	go func() { defer output.Done(); defer stderr.Close(); capturePipe("stderr", stderr, spec.Sink) }()
 	go func() {
 		waitErr := cmd.Wait()
-		output.Wait()
 		process.mu.Lock()
 		process.waitErr = waitErr
 		process.result.EndTime = time.Now()
 		process.result.ExitCode, process.result.Signal = status(cmd.ProcessState)
 		process.mu.Unlock()
+		// A leader may exit while descendants still hold its output pipes.
+		// Bound draining; lifecycle cleanup still gives the entire process
+		// group its configured signal and grace period.
+		drained := make(chan struct{})
+		go func() { output.Wait(); close(drained) }()
+		select {
+		case <-drained:
+		case <-time.After(100 * time.Millisecond):
+			_ = stdout.Close()
+			_ = stderr.Close()
+			<-drained
+		}
 		close(process.done)
 	}()
 	if ctx != nil {
 		go func() {
 			select {
 			case <-ctx.Done():
-				_ = process.Terminate(syscall.SIGTERM, 2*time.Second)
+				sig := os.Signal(syscall.SIGTERM)
+				if spec.StopSignal != nil {
+					sig = spec.StopSignal()
+				}
+				_ = process.Terminate(sig, spec.GracePeriod)
 			case <-process.done:
 			}
 		}()
@@ -133,6 +154,13 @@ func (Runner) Start(ctx context.Context, spec Spec) (*Process, error) {
 }
 
 func (p *Process) Done() <-chan struct{} { return p.done }
+
+// Snapshot returns process metadata without waiting for termination.
+func (p *Process) Snapshot() Result {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.result
+}
 
 func (p *Process) Wait() error {
 	<-p.done
@@ -152,6 +180,11 @@ func (p *Process) Terminate(signal os.Signal, grace time.Duration) error {
 	if p == nil || p.command == nil || p.command.Process == nil {
 		return nil
 	}
+	p.terminateMu.Lock()
+	defer p.terminateMu.Unlock()
+	if p.cleaned {
+		return p.Wait()
+	}
 	if grace <= 0 {
 		grace = 2 * time.Second
 	}
@@ -162,8 +195,6 @@ func (p *Process) Terminate(signal os.Signal, grace time.Duration) error {
 	defer ticker.Stop()
 	for processGroupAlive(p.command) {
 		select {
-		case <-p.done:
-			// The leader has exited, but descendants may still hold the group.
 		case <-deadline.C:
 			killErr := signalProcessGroup(p.command, syscall.SIGKILL)
 			p.mu.Lock()

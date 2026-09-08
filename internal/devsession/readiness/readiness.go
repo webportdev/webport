@@ -43,6 +43,10 @@ func Check(ctx context.Context, ready *config.Ready, options Options) (Result, e
 	if options.Expand == nil {
 		options.Expand = func(value string) (string, error) { return value, nil }
 	}
+	if ready.HTTP != nil {
+		options.OverallTimeout = durationOr(ready.HTTP.OverallTimeout, options.OverallTimeout)
+		options.Interval = durationOr(ready.HTTP.Interval, options.Interval)
+	}
 	if options.ProbeTimeout <= 0 {
 		options.ProbeTimeout = 2 * time.Second
 	}
@@ -193,11 +197,15 @@ func checkCommand(ctx context.Context, values []string, options Options) error {
 		}
 		commandValues[index] = expanded
 	}
-	process, err := options.CommandRunner.Start(ctx, command.Spec{Command: commandValues, Dir: options.WorkingDir, Env: options.Environment})
+	probeCtx, cancel := context.WithTimeout(ctx, options.ProbeTimeout)
+	defer cancel()
+	process, err := options.CommandRunner.Start(probeCtx, command.Spec{Command: commandValues, Dir: options.WorkingDir, Env: options.Environment, StopSignal: func() os.Signal { return os.Kill }, GracePeriod: time.Millisecond})
 	if err != nil {
 		return fmt.Errorf("start command readiness: %w", err)
 	}
-	if err := process.Wait(); err != nil {
+	err = process.Wait()
+	_ = process.Terminate(os.Kill, time.Millisecond)
+	if err != nil || probeCtx.Err() != nil {
 		return fmt.Errorf("command readiness exited unsuccessfully")
 	}
 	return nil

@@ -186,10 +186,12 @@ topological order with independent branches allowed to run concurrently.
 per-probe and overall timeouts. HTTP accepts `method`, `status` (one or more
 expected codes), `headers`, `interval`, `timeout`, and
 `insecure_skip_verify`; TLS verification is on by default. A command check is
-an argument array and treats exit status zero as ready. Readiness is cancelled
+an argument array with a bounded per-probe timeout and treats exit status zero
+as ready. HTTP also accepts `overall_timeout`. Readiness is cancelled
 when its service, dependency, or session fails.
 
-`shutdown.signal` defaults to `SIGTERM`; `grace_period` defaults to 5 seconds.
+`shutdown.signal` defaults to the signal received by the foreground owner
+(`SIGTERM` for a control-requested stop); `grace_period` defaults to 5 seconds.
 An exit-completing service's shutdown command is registered once its start
 command succeeds, even if readiness later fails. Shutdown commands have an
 individual timeout and run in reverse dependency order. There is no automatic
@@ -209,6 +211,12 @@ routes fail preflight if it is unavailable. Optional routes allow local startup
 and expose no public host/URL until daemon configuration is available. A route
 is registered only after its service is ready, has its own renewable lease, and
 is released before external shutdown commands run.
+Transient heartbeat failures retry at the heartbeat interval for up to one
+route TTL. Missing leases are re-registered; permanent failures or exhaustion
+of that recovery window fail required routes.
+Configured children carry `WEBPORT_SESSION_MANAGED=1` so daemon process
+discovery does not treat their generic `WEBPORT_ROUTE` context as a separate
+opt-in or bypass the session's readiness checks.
 
 `route.export` accepts only the aliases `host` and `url`, each mapping to a
 valid environment variable name. Aliases are globally unique. They are added
@@ -236,8 +244,12 @@ The wrapper keeps its existing route flags and lifecycle.
 The session commands are distinct from daemon-level `webport status` and
 `webport config`:
 
-* `check` validates and runs executable preflight without side effects;
-* `config` prints the resolved redacted plan;
+* `check` validates the selected dependency closure, environment references,
+  generator policies, readiness configuration, and executables without
+  starting commands or creating generated values;
+* `config` prints the resolved redacted plan, preferring the live session's
+  actual ports and values when available; `--show-sensitive` explicitly
+  reveals sensitive values in this inspection output;
 * `status` prints live state or the retained last-session record;
 * `env` renders Bash/POSIX/Zsh, Fish, or JSON environment data;
 * `logs` reads configured paths and may follow active files;

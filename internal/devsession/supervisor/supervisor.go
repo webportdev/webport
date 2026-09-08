@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"syscall"
 	"time"
@@ -36,11 +37,13 @@ type Event struct {
 	State   State
 	Error   error
 	At      time.Time
+	Process command.Result
 }
 
 type Result struct {
-	States map[string]State
-	Events []Event
+	States        map[string]State
+	Events        []Event
+	CleanupErrors []string
 }
 
 type Options struct {
@@ -52,6 +55,8 @@ type Options struct {
 	Runner       command.Runner
 	RouteManager *routes.Manager
 	RoutePlans   []plan.Route
+	OnEvent      func(Event)
+	StopSignal   func() os.Signal
 }
 
 type event struct {
@@ -62,7 +67,16 @@ type event struct {
 	routeFailure     *routes.Failure
 }
 
-func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (Result, error) {
+func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (result Result, runErr error) {
+	var cleanupErrors []string
+	defer func() { result.CleanupErrors = cleanupErrors }()
+	cleanup := func(registered map[string]struct{}) error {
+		err := releaseRoutesAndShutdown(registered, sessionPlan, options)
+		if err != nil {
+			cleanupErrors = append(cleanupErrors, err.Error())
+		}
+		return err
+	}
 	if options.Out == nil {
 		options.Out = io.Discard
 	}
@@ -89,7 +103,11 @@ func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (Result, e
 			for {
 				select {
 				case failure := <-routeFailures:
-					events <- event{service: failure.Service, routeFailure: &failure}
+					select {
+					case events <- event{service: failure.Service, routeFailure: &failure}:
+					case <-runCtx.Done():
+						return
+					}
 				case <-runCtx.Done():
 					return
 				}
@@ -129,7 +147,7 @@ func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (Result, e
 			if primaryErr != nil {
 				if !cleanupDone {
 					cleanupDone = true
-					if cleanupErr := releaseRoutesAndShutdown(registeredShutdowns, sessionPlan, options); cleanupErr != nil {
+					if cleanupErr := cleanup(registeredShutdowns); cleanupErr != nil {
 						primaryErr = errors.Join(primaryErr, cleanupErr)
 					}
 				}
@@ -145,7 +163,7 @@ func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (Result, e
 			if ctx.Err() != nil {
 				if !cleanupDone {
 					cleanupDone = true
-					if cleanupErr := releaseRoutesAndShutdown(registeredShutdowns, sessionPlan, options); cleanupErr != nil {
+					if cleanupErr := cleanup(registeredShutdowns); cleanupErr != nil {
 						return Result{States: states, Events: eventLog}, cleanupErr
 					}
 				}
@@ -162,16 +180,8 @@ func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (Result, e
 				if len(registeredShutdowns) == 0 && (options.RouteManager == nil || !options.RouteManager.Active()) {
 					return Result{States: states, Events: eventLog}, nil
 				}
-				select {
-				case <-externalDone:
-					cancel()
-					externalDone = nil
-				case update := <-events:
-					if update.registerShutdown {
-						registeredShutdowns[update.service] = struct{}{}
-					}
-				}
-				continue
+				// Continue through the common event loop so route failures are
+				// handled even when only external resources remain.
 			}
 		}
 
@@ -197,12 +207,7 @@ func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (Result, e
 			}
 			if update.state == StateReady {
 				states[update.service] = StateReady
-				delete(active, update.service)
-				// A process-completing service remains active after readiness; the
-				// runService sends a second terminal event when it exits.
-				if sessionPlan.Services[update.service].Completion == "" || sessionPlan.Services[update.service].Completion == "process" {
-					active[update.service] = struct{}{}
-				}
+				// Keep every worker active until its terminal event is consumed.
 				eventLog = append(eventLog, Event{Service: update.service, State: update.state, At: time.Now()})
 				continue
 			}
@@ -218,6 +223,45 @@ func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (Result, e
 }
 
 func runService(ctx context.Context, name string, service plan.Service, options Options, emit func(string, State, error), registerShutdown func()) {
+	var process *command.Process
+	stopSignal := func() os.Signal {
+		setting := ""
+		if service.Shutdown != nil {
+			setting = service.Shutdown.Signal
+		}
+		switch setting {
+		case "SIGINT":
+			return syscall.SIGINT
+		case "SIGHUP":
+			return syscall.SIGHUP
+		case "SIGKILL":
+			return syscall.SIGKILL
+		case "SIGTERM":
+			return syscall.SIGTERM
+		default:
+			if options.StopSignal != nil {
+				return options.StopSignal()
+			}
+			return syscall.SIGTERM
+		}
+	}
+	send := emit
+	emit = func(name string, state State, err error) {
+		if process != nil && (state == StateStopped || state == StateFailed || state == StateSuccess) {
+			_ = process.Terminate(stopSignal(), shutdownGrace(service))
+		}
+		if err != nil {
+			err = fmt.Errorf("service %q: %w", name, err)
+		}
+		if options.OnEvent != nil {
+			update := Event{Service: name, State: state, Error: err, At: time.Now()}
+			if process != nil {
+				update.Process = process.Snapshot()
+			}
+			options.OnEvent(update)
+		}
+		send(name, state, err)
+	}
 	values := options.Environments[name]
 	commandValues, shellValue, err := expandCommand(service, values, options.Runtime)
 	if err != nil {
@@ -228,19 +272,27 @@ func runService(ctx context.Context, name string, service plan.Service, options 
 	if options.SinkFactory != nil {
 		sink = options.SinkFactory(name)
 	}
-	process, err := options.Runner.Start(ctx, command.Spec{
+	process, err = options.Runner.Start(ctx, command.Spec{
 		Command: commandValues, Shell: shellValue, Dir: service.WorkingDir,
 		Env: environmentList(values), Sink: sink,
+		StopSignal: stopSignal, GracePeriod: shutdownGrace(service),
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			emit(name, StateStopped, nil)
+			return
+		}
 		emit(name, StateFailed, fmt.Errorf("start service: %w", err))
 		return
 	}
+	if options.OnEvent != nil {
+		options.OnEvent(Event{Service: name, State: StateStarting, At: time.Now(), Process: process.Snapshot()})
+	}
 	if service.Completion == "exit" {
-		if service.Shutdown != nil && len(service.Shutdown.Command) > 0 {
+		processErr := process.Wait()
+		if processErr == nil && service.Shutdown != nil && len(service.Shutdown.Command) > 0 {
 			registerShutdown()
 		}
-		processErr := process.Wait()
 		if ctx.Err() != nil {
 			emit(name, StateStopped, nil)
 			return
@@ -262,6 +314,10 @@ func runService(ctx context.Context, name string, service plan.Service, options 
 			return
 		}
 		if err := activateRoute(ctx, name, options); err != nil {
+			if ctx.Err() != nil {
+				emit(name, StateStopped, nil)
+				return
+			}
 			emit(name, StateFailed, err)
 			return
 		}
@@ -287,12 +343,16 @@ func runService(ctx context.Context, name string, service plan.Service, options 
 			emit(name, StateStopped, nil)
 			return
 		}
-		_ = process.Terminate(syscall.SIGTERM, shutdownGrace(service))
+		_ = process.Terminate(stopSignal(), shutdownGrace(service))
 		emit(name, StateFailed, fmt.Errorf("readiness failed after %d attempts (%s): %w", check.Attempts, check.LastProbe, readyErr))
 		return
 	}
 	if err := activateRoute(ctx, name, options); err != nil {
-		_ = process.Terminate(syscall.SIGTERM, shutdownGrace(service))
+		_ = process.Terminate(stopSignal(), shutdownGrace(service))
+		if ctx.Err() != nil {
+			emit(name, StateStopped, nil)
+			return
+		}
 		emit(name, StateFailed, err)
 		return
 	}
@@ -333,9 +393,14 @@ func runShutdownCommands(registered map[string]struct{}, sessionPlan plan.Plan, 
 		process, startErr := options.Runner.Start(cleanupCtx, command.Spec{
 			Command: commandValues, Shell: shellValue, Dir: service.WorkingDir,
 			Env: environmentList(values), Sink: sinkFor(options, name),
+			StopSignal: func() os.Signal { return os.Kill }, GracePeriod: time.Millisecond,
 		})
 		if startErr == nil {
 			startErr = process.Wait()
+			_ = process.Terminate(os.Kill, time.Millisecond)
+		}
+		if cleanupCtx.Err() != nil {
+			startErr = errors.Join(startErr, cleanupCtx.Err())
 		}
 		cancel()
 		if startErr != nil {

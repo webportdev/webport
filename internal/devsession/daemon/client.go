@@ -129,7 +129,7 @@ func (c *HTTPClient) Register(ctx context.Context, route RouteRequest) (Lease, e
 	if err := c.doJSON(ctx, http.MethodPost, "/routes", legacy, &legacyRoute, http.StatusCreated); err != nil {
 		return Lease{}, fmt.Errorf("register route: %w", err)
 	}
-	return Lease{Route: legacyRoute}, nil
+	return Lease{ID: "legacy:" + route.Project + ":" + route.Branch, Route: legacyRoute}, nil
 }
 
 func (c *HTTPClient) Heartbeat(ctx context.Context, leaseID string, ttl time.Duration) (Lease, error) {
@@ -138,6 +138,13 @@ func (c *HTTPClient) Heartbeat(ctx context.Context, leaseID string, ttl time.Dur
 	}{int(ttl.Seconds())}
 	if leaseID == "" {
 		return Lease{}, errors.New("heartbeat lease ID is required")
+	}
+	if id, legacy := strings.CutPrefix(leaseID, "legacy:"); legacy {
+		var route Route
+		if err := c.doJSON(ctx, http.MethodPost, "/routes/"+url.PathEscape(id)+"/heartbeat", body, &route, http.StatusOK); err != nil {
+			return Lease{}, fmt.Errorf("heartbeat route: %w", err)
+		}
+		return Lease{ID: leaseID, Route: route}, nil
 	}
 	var response leaseResponse
 	endpoint := "/v1/leases/" + url.PathEscape(leaseID) + "/heartbeat"
@@ -151,7 +158,11 @@ func (c *HTTPClient) Release(ctx context.Context, leaseID string) error {
 	if leaseID == "" {
 		return nil
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.endpoint("/v1/leases/"+url.PathEscape(leaseID)), http.NoBody)
+	path := "/v1/leases/" + url.PathEscape(leaseID)
+	if id, legacy := strings.CutPrefix(leaseID, "legacy:"); legacy {
+		path = "/routes/" + url.PathEscape(id)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.endpoint(path), http.NoBody)
 	if err != nil {
 		return err
 	}
@@ -167,10 +178,11 @@ func (c *HTTPClient) Release(ctx context.Context, leaseID string) error {
 }
 
 type LeaseManager struct {
-	client   Client
-	request  RouteRequest
-	interval time.Duration
-	mu       struct {
+	client     Client
+	request    RouteRequest
+	interval   time.Duration
+	OnRecovery func(error)
+	mu         struct {
 		// The manager's lease is replaced atomically after recovery.
 		sync.Mutex
 		lease Lease
@@ -215,13 +227,27 @@ func (m *LeaseManager) Start(ctx context.Context) error {
 func (m *LeaseManager) Run(ctx context.Context) error {
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
+	lastSuccess := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
 			if err := m.heartbeat(ctx); err != nil {
-				return err
+				if !errors.Is(err, ErrUnavailable) && !errors.Is(err, ErrNotFound) {
+					return err
+				}
+				if m.OnRecovery != nil {
+					m.OnRecovery(err)
+				}
+				if time.Since(lastSuccess) >= m.request.TTL {
+					return fmt.Errorf("route recovery exceeded TTL: %w", err)
+				}
+				continue
+			}
+			lastSuccess = time.Now()
+			if m.OnRecovery != nil {
+				m.OnRecovery(nil)
 			}
 		}
 	}
@@ -325,6 +351,8 @@ func (c *HTTPClient) statusError(response *http.Response) error {
 		sentinel = ErrNotFound
 	case http.StatusMethodNotAllowed:
 		sentinel = ErrMethodNotAllowed
+	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		sentinel = ErrUnavailable
 	default:
 		sentinel = fmt.Errorf("unexpected daemon status %d", response.StatusCode)
 	}

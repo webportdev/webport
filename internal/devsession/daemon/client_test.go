@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -46,6 +47,7 @@ func TestHTTPClientReadsConfigAndRegistersLease(t *testing.T) {
 }
 
 func TestHTTPClientFallsBackToLegacyRoutes(t *testing.T) {
+	var heartbeats, releases atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/leases" {
 			w.WriteHeader(http.StatusNotFound)
@@ -56,6 +58,16 @@ func TestHTTPClientFallsBackToLegacyRoutes(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(Route{Project: "app", Branch: "main", Port: 3000, Domain: "app-main.dev.example.test"})
 			return
 		}
+		if r.URL.EscapedPath() == "/routes/app:feature%2Ftest/heartbeat" && r.Method == http.MethodPost {
+			heartbeats.Add(1)
+			_ = json.NewEncoder(w).Encode(Route{Project: "app", Branch: "feature/test", Port: 3000})
+			return
+		}
+		if r.URL.EscapedPath() == "/routes/app:feature%2Ftest" && r.Method == http.MethodDelete {
+			releases.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		http.NotFound(w, r)
 	}))
 	defer server.Close()
@@ -63,9 +75,18 @@ func TestHTTPClientFallsBackToLegacyRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease, err := client.Register(context.Background(), RouteRequest{Project: "app", Branch: "main", Port: 3000, TTL: time.Minute})
-	if err != nil || lease.ID != "" || lease.Route.Port != 3000 {
+	lease, err := client.Register(context.Background(), RouteRequest{Project: "app", Branch: "feature/test", Port: 3000, TTL: time.Minute})
+	if err != nil || lease.ID == "" || lease.Route.Port != 3000 {
 		t.Fatalf("legacy Register() = %+v, %v", lease, err)
+	}
+	if _, err := client.Heartbeat(context.Background(), lease.ID, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Release(context.Background(), lease.ID); err != nil {
+		t.Fatal(err)
+	}
+	if heartbeats.Load() != 1 || releases.Load() != 1 {
+		t.Fatal("legacy lifecycle was not completed")
 	}
 }
 
@@ -132,3 +153,60 @@ func (r byteReader) Read(p []byte) (int, error) {
 }
 
 func bytesReader(value byte) byteReader { return byteReader(value) }
+
+type recoveryClient struct {
+	fakeClient
+	unavailable int
+	forever     bool
+}
+
+func (f *recoveryClient) Heartbeat(ctx context.Context, id string, ttl time.Duration) (Lease, error) {
+	if f.forever || f.unavailable > 0 {
+		f.unavailable--
+		return Lease{}, ErrUnavailable
+	}
+	return f.fakeClient.Heartbeat(ctx, id, ttl)
+}
+
+func TestLeaseManagerRetriesTransientOutageAndReregisters(t *testing.T) {
+	client := &recoveryClient{unavailable: 2}
+	manager, err := NewLeaseManager(client, RouteRequest{Project: "app", Branch: "main", Port: 3000, TTL: time.Second}, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	recoveries := 0
+	manager.OnRecovery = func(err error) {
+		if err != nil {
+			recoveries++
+		} else {
+			cancel()
+		}
+	}
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run = %v", err)
+	}
+	if recoveries != 2 || client.registers != 2 {
+		t.Fatalf("recovery attempts %d, registrations %d", recoveries, client.registers)
+	}
+}
+
+func TestLeaseManagerBoundsOutageByTTL(t *testing.T) {
+	client := &recoveryClient{forever: true}
+	manager, err := NewLeaseManager(client, RouteRequest{Project: "app", Branch: "main", Port: 3000, TTL: 30 * time.Millisecond}, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Run(ctx); err == nil || !strings.Contains(err.Error(), "exceeded TTL") {
+		t.Fatalf("Run = %v", err)
+	}
+}

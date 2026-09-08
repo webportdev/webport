@@ -1,4 +1,4 @@
-// Package session connects the phase-1 configured single-service lifecycle.
+// Package session connects configured service lifecycles.
 package session
 
 import (
@@ -8,9 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
 
 	"github.com/webportdev/webport/internal/devsession/command"
@@ -21,23 +20,23 @@ import (
 	"github.com/webportdev/webport/internal/devsession/identity"
 	"github.com/webportdev/webport/internal/devsession/logs"
 	"github.com/webportdev/webport/internal/devsession/plan"
-	"github.com/webportdev/webport/internal/devsession/ports"
-	"github.com/webportdev/webport/internal/devsession/readiness"
 	routeleases "github.com/webportdev/webport/internal/devsession/routes"
-	"github.com/webportdev/webport/internal/devsession/secrets"
 	"github.com/webportdev/webport/internal/devsession/state"
 	"github.com/webportdev/webport/internal/devsession/supervisor"
 )
 
 type Options struct {
-	CurrentDir string
-	ConfigPath string
-	Profile    string
-	Service    string
-	API        string
-	In         io.Reader
-	Out        io.Writer
-	ErrOut     io.Writer
+	CurrentDir    string
+	ConfigPath    string
+	Profile       string
+	Service       string
+	API           string
+	In            io.Reader
+	Out           io.Writer
+	ErrOut        io.Writer
+	StopSignal    func() os.Signal
+	PreferLive    bool
+	ShowSensitive bool
 }
 
 func Run(ctx context.Context, options Options) (runErr error) {
@@ -53,6 +52,10 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	if options.API == "" {
 		options.API = "http://127.0.0.1:8080"
 	}
+	// All services and lifecycle messages share an output lock.
+	outputMu := new(sync.Mutex)
+	options.Out = synchronizedWriter{outputMu, options.Out}
+	options.ErrOut = synchronizedWriter{outputMu, options.ErrOut}
 	cfg, err := config.Load(config.Options{CurrentDir: options.CurrentDir, ConfigPath: options.ConfigPath})
 	if err != nil {
 		return err
@@ -61,10 +64,6 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	if err != nil {
 		return err
 	}
-	profileName := options.Profile
-	if profileName == "" && options.Service == "" {
-		profileName = "default"
-	}
 	stateStore, err := state.NewStore(id.WorktreeRoot, "")
 	if err != nil {
 		return err
@@ -72,175 +71,135 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	if err := stateStore.Acquire(); err != nil {
 		return err
 	}
-	startedAt := time.Now()
+	defer func() { runErr = errors.Join(runErr, stateStore.Release()) }()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	client, err := daemon.NewHTTPClient(options.API, nil, nil)
+	if err != nil {
+		return err
+	}
+	resolvedPlan, _, err := prepare(ctx, cfg, id, options, client)
+	if err != nil {
+		return err
+	}
+	environments, err := composeEnvironments(cfg, resolvedPlan, true)
+	if err != nil {
+		return err
+	}
+	inspectionPlan := inspectEnvironments(resolvedPlan, environments)
+	runtime := runtimeFor(resolvedPlan)
+	live := state.LiveState{
+		SessionID: id.SessionID, Worktree: id.WorktreeRoot, Profile: resolvedPlan.Profile,
+		StartedAt: time.Now(), Ports: runtime.Ports, Services: make(map[string]state.ServiceState),
+		Routes: make(map[string]state.RouteState), Endpoints: make(map[string]string),
+		PIDs: []state.ProcessIdentity{state.IdentifyProcess(os.Getpid())},
+	}
+	for _, name := range resolvedPlan.Order {
+		live.Services[name] = state.ServiceState{State: string(supervisor.StatePending)}
+		for label, endpoint := range resolvedPlan.Services[name].Endpoints {
+			live.Endpoints[name+"."+label] = endpoint
+		}
+	}
+	for _, item := range resolvedPlan.Routes.Routes {
+		status := "pending"
+		if !item.Available {
+			status = "unavailable"
+		}
+		live.Routes[item.Service] = state.RouteState{State: status, Project: item.Project, Branch: item.Branch, Host: item.Host, URL: item.URL, Optional: item.Optional}
+	}
+	var liveMu sync.Mutex
 	controlPath := strings.TrimSuffix(stateStore.LivePath, ".live.json") + ".sock"
-	var cancelSession context.CancelFunc
-	var activePlan plan.Plan
-	activeEnvironments := make(map[string]env.Values)
-	var liveState state.LiveState
-	control, controlErr := state.StartControl(controlPath, func(_ context.Context, request state.Request) state.Response {
+	control, err := state.StartControl(controlPath, func(_ context.Context, request state.Request) state.Response {
+		showSensitive, _ := request.Payload["show_sensitive"].(bool)
 		switch request.Operation {
 		case "stop":
-			if cancelSession != nil {
-				cancelSession()
-			}
+			cancel()
 			return state.Response{OK: true, Payload: map[string]any{"session_id": id.SessionID}}
 		case "status":
-			statusState := liveState
-			statusState.ControlToken = ""
-			return state.Response{OK: true, Payload: map[string]any{"state": statusState}}
+			// Read an atomic disk snapshot rather than sharing mutable maps.
+			value, err := stateStore.ReadLive()
+			if err != nil {
+				return state.Response{Error: err.Error()}
+			}
+			value.ControlToken = ""
+			return state.Response{OK: true, Payload: map[string]any{"state": value}}
 		case "config":
-			encoded, _ := activePlan.JSON()
+			if structured, _ := request.Payload["structured"].(bool); structured {
+				value := inspectionPlan
+				if !showSensitive {
+					value.Services = cloneServices(value.Services)
+					hide := func(values map[string]config.Value) map[string]config.Value {
+						result := make(map[string]config.Value, len(values))
+						for name, item := range values {
+							if item.Sensitive {
+								redacted := "<redacted>"
+								item.Literal = &redacted
+							}
+							result[name] = item
+						}
+						return result
+					}
+					value.Environment = hide(value.Environment)
+					for name, service := range value.Services {
+						service.Env = hide(service.Env)
+						value.Services[name] = service
+					}
+				}
+				return state.Response{OK: true, Payload: map[string]any{"plan": value}}
+			}
+			encoded, err := inspectionPlan.JSON(showSensitive)
+			if err != nil {
+				return state.Response{Error: err.Error()}
+			}
 			var payload map[string]any
 			_ = json.Unmarshal(encoded, &payload)
 			return state.Response{OK: true, Payload: payload}
 		case "env":
-			showSensitive := false
-			if request.Payload != nil {
-				showSensitive, _ = request.Payload["show_sensitive"].(bool)
-			}
-			if len(activePlan.Order) == 0 {
-				return state.Response{OK: true, Payload: map[string]any{"values": map[string]string{}}}
-			}
-			return state.Response{OK: true, Payload: map[string]any{"values": activeEnvironments[activePlan.Order[0]].Map(showSensitive)}}
+			return state.Response{OK: true, Payload: map[string]any{"values": environments[resolvedPlan.Roots[0]].Map(showSensitive)}}
 		case "exec-info":
-			serviceName := ""
-			if request.Payload != nil {
-				serviceName, _ = request.Payload["service"].(string)
-			}
-			service, ok := activePlan.Services[serviceName]
+			name, _ := request.Payload["service"].(string)
+			service, ok := resolvedPlan.Services[name]
 			if !ok {
 				return state.Response{Status: 404, Error: "unknown service"}
 			}
-			environment := make(map[string]string)
-			for _, item := range sessionEnvironment(activeEnvironments[serviceName], activePlan.Identity, activePlan.Routes, serviceName) {
-				name, value, found := strings.Cut(item, "=")
-				if found {
-					environment[name] = value
-				}
-			}
-			return state.Response{OK: true, Payload: map[string]any{"working_dir": service.WorkingDir, "environment": environment}}
+			return state.Response{OK: true, Payload: map[string]any{"working_dir": service.WorkingDir, "environment": environments[name].Map(true)}}
 		default:
 			return state.Response{Status: 404, Error: "unknown control operation"}
 		}
 	})
-	if controlErr != nil {
-		_ = stateStore.Release()
-		return controlErr
+	if err != nil {
+		return err
 	}
-	sessionCtx, cancel := context.WithCancel(ctx)
-	cancelSession = cancel
-	ctx = sessionCtx
+	live.ControlPath, live.ControlToken = control.Path(), control.Token()
+	last := state.LastSession{SessionID: id.SessionID, Worktree: id.WorktreeRoot, Profile: resolvedPlan.Profile, StartedAt: live.StartedAt}
 	defer func() {
+		if options.StopSignal != nil && ctx.Err() != nil && last.Initiating == "" {
+			if sig := options.StopSignal(); sig != nil {
+				last.Signal = sig.String()
+			}
+		}
 		cancel()
-		_ = control.Close()
-		_ = stateStore.RemoveLive()
-		last := state.LastSession{SessionID: id.SessionID, Worktree: id.WorktreeRoot, Profile: profileName, StartedAt: startedAt, StoppedAt: time.Now()}
-		last.LogPaths = liveState.LogPaths
+		runErr = errors.Join(runErr, control.Close())
+		last.StoppedAt = time.Now()
+		last.LogPaths, last.Endpoints, last.Routes = live.LogPaths, live.Endpoints, live.Routes
 		if runErr != nil {
-			last.Initiating = runErr.Error()
+			if last.Initiating == "" {
+				last.Initiating = runErr.Error()
+			}
+			if last.ExitCode == 0 {
+				last.ExitCode = 1
+			}
 		}
 		if cfg.Session.RetainLastSummary == nil || *cfg.Session.RetainLastSummary {
-			_ = stateStore.WriteLast(last)
+			runErr = errors.Join(runErr, stateStore.WriteLast(last))
 		}
-		_ = stateStore.Release()
+		runErr = errors.Join(runErr, stateStore.RemoveLive())
 	}()
-	profileEnv := map[string]config.Value{}
-	if profileName != "" {
-		profile, ok := cfg.Profiles[profileName]
-		if !ok && options.Service == "" {
-			return fmt.Errorf("profile %q is not defined", profileName)
-		}
-		if ok {
-			profileEnv = profile.Env
-		}
-	}
-
-	portOwners := make(map[string]string)
-	for serviceName, service := range cfg.Services {
-		if service.Route != nil {
-			portOwners[service.Route.Port] = serviceName
-		}
-	}
-	allocations, err := ports.Resolve(ctx, cfg.Ports, portOwners, ports.Options{})
-	if err != nil {
-		return err
-	}
-	portValues := make(map[string]int)
-	for name, allocation := range allocations {
-		if !allocation.Discovered {
-			portValues[name] = allocation.Port
-		}
-	}
-	liveState = state.LiveState{
-		SessionID: id.SessionID, Worktree: id.WorktreeRoot, Profile: profileName,
-		ControlPath: control.Path(), ControlToken: control.Token(), StartedAt: startedAt, Ports: portValues,
-	}
-	if err := stateStore.WriteLive(liveState); err != nil {
-		return err
-	}
-
-	daemonClient, err := daemon.NewHTTPClient(options.API, nil, nil)
-	if err != nil {
-		return err
-	}
-	primaryService := options.Service
-	if primaryService == "" && profileName != "" && len(cfg.Profiles[profileName].Services) > 0 {
-		primaryService = cfg.Profiles[profileName].Services[0]
-	}
-	routes, err := plan.ResolveRoutes(ctx, cfg, id, daemonClient, primaryService, portValues)
-	if err != nil {
-		return err
-	}
-
-	secretStore, err := secrets.NewStore(filepathForSecretStore(id))
-	if err != nil {
-		return err
-	}
-	generated, err := secrets.ResolveValues(cfg.Env, secretStore, nil)
-	if err != nil {
-		return err
-	}
-	inherited := environmentFromProcess()
-	dotenvFiles := make([]string, 0, len(cfg.Session.EnvFiles))
-	for _, path := range cfg.Session.EnvFiles {
-		resolved, resolveErr := id.ResolvePath(path)
-		if resolveErr != nil {
-			return fmt.Errorf("dotenv path %q: %w", path, resolveErr)
-		}
-		dotenvFiles = append(dotenvFiles, resolved)
-	}
-
-	resolvedPlan, err := plan.Build(cfg, id, plan.BuildOptions{
-		Profile: profileName, Service: options.Service, PortSpecs: cfg.Ports,
-		PortValues: allocations, Routes: routes,
-	})
-	if err != nil {
-		return err
-	}
-	environments := make(map[string]env.Values, len(resolvedPlan.Order))
-	for _, name := range resolvedPlan.Order {
-		service := resolvedPlan.Services[name]
-		values, resolveErr := env.Resolve(env.Input{
-			Inherited: inherited, DotenvFiles: dotenvFiles, Top: generated,
-			Profile: profileEnv, Service: service.Env, Project: id.Project,
-			Branch: id.Branch, Scope: id.Scope, Ports: portValues, Routes: routes,
-			ServiceName: name,
-		})
-		if resolveErr != nil {
-			return resolveErr
-		}
-		environments[name] = values
-	}
-	activePlan = resolvedPlan
-	for name, values := range environments {
-		activeEnvironments[name] = values
-	}
-	exportPaths := make(map[string]string, len(cfg.Session.Exports))
+	exportPaths := make(map[string]string)
 	for shell, path := range cfg.Session.Exports {
-		resolved, resolveErr := id.ResolvePath(path)
-		if resolveErr != nil {
-			return fmt.Errorf("export path %q: %w", path, resolveErr)
+		resolved, err := id.ResolvePath(path)
+		if err != nil {
+			return err
 		}
 		exportPaths[shell] = resolved
 	}
@@ -249,159 +208,141 @@ func Run(ctx context.Context, options Options) (runErr error) {
 		return err
 	}
 	defer exportStore.Remove()
-	if len(resolvedPlan.Order) > 0 && len(exportPaths) > 0 {
-		if err := exportStore.Write(exportPaths, environments[resolvedPlan.Order[0]]); err != nil {
+	if len(exportPaths) > 0 {
+		if err := exportStore.Write(exportPaths, environments[resolvedPlan.Roots[0]]); err != nil {
 			return err
 		}
 	}
-	liveState.Exports = exportPaths
+	live.Exports = exportPaths
 	fmt.Fprint(options.Out, resolvedPlan.Human())
 	logManager, err := logs.New(id.ConfigDirectory, options.Out, false)
 	if err != nil {
 		return err
 	}
 	defer logManager.Close()
-	sinks := make(map[string]command.OutputSink, len(resolvedPlan.Order))
+	sinks := make(map[string]command.OutputSink)
 	for _, name := range resolvedPlan.Order {
-		sink, sinkErr := logManager.Sink(name, resolvedPlan.Services[name].Logs)
-		if sinkErr != nil {
-			return sinkErr
+		sink, err := logManager.Sink(name, resolvedPlan.Services[name].Logs)
+		if err != nil {
+			return err
 		}
 		sinks[name] = sink
 	}
-	liveState.LogPaths = logManager.Paths()
-	_ = stateStore.WriteLive(liveState)
-	runtime := env.Runtime{Project: id.Project, Branch: id.Branch, Scope: id.Scope, Ports: portValues, Routes: routes}
-	if len(resolvedPlan.Order) > 1 {
-		var routeManager *routeleases.Manager
-		if resolvedPlan.Routes.Daemon.Available && len(resolvedPlan.Routes.Routes) > 0 {
-			ttl := time.Duration(resolvedPlan.Routes.Daemon.DefaultTTL) * time.Second
-			if ttl <= 0 {
-				ttl = 5 * time.Minute
-			}
-			interval := ttl / 3
-			if interval <= 0 {
-				interval = time.Second
-			}
-			routeManager, err = routeleases.NewManager(daemonClient, ttl, interval)
-			if err != nil {
-				return err
-			}
-		}
-		result, runErr := supervisor.Run(ctx, resolvedPlan, supervisor.Options{
-			Environments: environments, Runtime: runtime, Out: options.Out, ErrOut: options.ErrOut,
-			RouteManager: routeManager, RoutePlans: resolvedPlan.Routes.Routes,
-			SinkFactory: func(name string) command.OutputSink { return sinks[name] },
-		})
-		if runErr != nil {
-			return runErr
-		}
-		for _, state := range result.States {
-			if state == supervisor.StateFailed {
-				return errors.New("development session service failed")
-			}
-		}
-		return nil
+	live.LogPaths = logManager.Paths()
+	if err := stateStore.WriteLive(live); err != nil {
+		return err
 	}
-	serviceName := resolvedPlan.Order[0]
-	service := resolvedPlan.Services[serviceName]
-	values := environments[serviceName]
-	commandValues, shellValue, err := expandCommand(service, values, runtime)
-	if err != nil {
-		return fmt.Errorf("service %q command: %w", serviceName, err)
-	}
-	sink := sinks[serviceName]
-	process, err := (command.Runner{}).Start(ctx, command.Spec{
-		Command: commandValues, Shell: shellValue, Dir: service.WorkingDir,
-		Env: sessionEnvironment(values, id, routes, serviceName), Sink: sink,
-	})
-	if err != nil {
-		return fmt.Errorf("start service %q: %w", serviceName, err)
-	}
-
-	readyCtx, cancelReady := context.WithCancel(ctx)
-	defer cancelReady()
-	go func() {
-		select {
-		case <-process.Done():
-			cancelReady()
-		case <-readyCtx.Done():
-		}
-	}()
-	readyResult, readyErr := readiness.Check(readyCtx, service.Ready, readiness.Options{
-		Expand:     func(value string) (string, error) { return values.ExpandRuntime(value, runtime) },
-		WorkingDir: service.WorkingDir, Environment: sessionEnvironment(values, id, routes, serviceName),
-	})
-	if readyErr != nil {
-		_ = process.Terminate(syscall.SIGTERM, shutdownGrace(service))
-		return fmt.Errorf("service %q readiness failed after %d attempts (%s): %w", serviceName, readyResult.Attempts, readyResult.LastProbe, readyErr)
-	}
-
-	var lease *daemon.LeaseManager
-	var stopHeartbeat context.CancelFunc
-	if item, ok := routeForService(routes, serviceName); ok && item.Available {
-		ttl := time.Duration(routes.Daemon.DefaultTTL) * time.Second
+	var routeManager *routeleases.Manager
+	if resolvedPlan.Routes.Daemon.Available && len(resolvedPlan.Routes.Routes) > 0 {
+		ttl := time.Duration(resolvedPlan.Routes.Daemon.DefaultTTL) * time.Second
 		if ttl <= 0 {
 			ttl = 5 * time.Minute
 		}
-		interval := ttl / 3
-		if interval <= 0 {
-			interval = time.Second
-		}
-		lease, err = daemon.NewLeaseManager(daemonClient, daemon.RouteRequest{Project: item.Project, Branch: item.Branch, Port: item.Port, TTL: ttl}, interval)
+		routeManager, err = routeleases.NewManager(client, ttl, ttl/3)
 		if err != nil {
-			_ = process.Terminate(syscall.SIGTERM, shutdownGrace(service))
 			return err
 		}
-		if err := lease.Start(ctx); err != nil {
-			if item.Optional {
-				fmt.Fprintf(options.ErrOut, "warning: optional route for %s unavailable: %v\n", serviceName, err)
-				lease = nil
-			} else {
-				_ = process.Terminate(syscall.SIGTERM, shutdownGrace(service))
-				return fmt.Errorf("register required route for %q: %w", serviceName, err)
+	}
+	refreshRoutes := func() {
+		if routeManager == nil {
+			return
+		}
+		for name, entry := range routeManager.Snapshot() {
+			value := live.Routes[name]
+			value.State = string(entry.State)
+			live.Routes[name] = value
+			if entry.Error != "" {
+				live.LastError = entry.Error
 			}
-		} else {
-			heartbeatCtx, cancelHeartbeat := context.WithCancel(ctx)
-			stopHeartbeat = cancelHeartbeat
-			go func() { _ = lease.Run(heartbeatCtx) }()
-			fmt.Fprintf(options.Out, "public URL: %s\n", item.URL)
 		}
 	}
-
-	processErr := waitForProcess(ctx, process)
-	if stopHeartbeat != nil {
-		stopHeartbeat()
-	}
-	if ctx.Err() != nil {
-		_ = process.Terminate(syscall.SIGTERM, shutdownGrace(service))
-	} else if processErr == nil {
-		// A process-completing service exiting successfully is still unexpected;
-		// completion policy is enforced here rather than in the runner.
-		if service.Completion == "" || service.Completion == "process" {
-			processErr = errors.New("process exited unexpectedly with status 0")
+	var stateErr error
+	writeLive := func() {
+		refreshRoutes()
+		if err := stateStore.WriteLive(live); err != nil {
+			stateErr = errors.Join(stateErr, err)
+			cancel()
 		}
 	}
-	if lease != nil {
-		if releaseErr := lease.Stop(context.Background()); releaseErr != nil && processErr == nil {
-			processErr = fmt.Errorf("release route: %w", releaseErr)
+	// Route recovery can change independently of process state.
+	pollCtx, stopPoll := context.WithCancel(ctx)
+	pollDone := make(chan struct{})
+	go func() {
+		defer close(pollDone)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pollCtx.Done():
+				return
+			case <-ticker.C:
+				liveMu.Lock()
+				writeLive()
+				liveMu.Unlock()
+			}
 		}
+	}()
+	result, err := supervisor.Run(ctx, resolvedPlan, supervisor.Options{
+		Environments: environments, Runtime: runtime, Out: options.Out, ErrOut: options.ErrOut,
+		RouteManager: routeManager, RoutePlans: resolvedPlan.Routes.Routes,
+		StopSignal:  options.StopSignal,
+		SinkFactory: func(name string) command.OutputSink { return sinks[name] },
+		OnEvent: func(event supervisor.Event) {
+			liveMu.Lock()
+			defer liveMu.Unlock()
+			value := live.Services[event.Service]
+			if event.Process.PID != 0 && value.PID == 0 {
+				identity := state.IdentifyProcess(event.Process.PID)
+				if identity.StartTime != "" {
+					live.PIDs = append(live.PIDs, identity)
+				}
+			}
+			value.State, value.PID = string(event.State), event.Process.PID
+			value.StartedAt, value.EndedAt = event.Process.StartTime, event.Process.EndTime
+			value.Ready = event.State == supervisor.StateReady || event.State == supervisor.StateSuccess
+			if event.Error != nil {
+				value.LastError, live.LastError = event.Error.Error(), event.Error.Error()
+				if last.Initiating == "" {
+					last.Initiating = event.Error.Error()
+					last.ExitCode, last.Signal = event.Process.ExitCode, event.Process.Signal
+				}
+				fmt.Fprintf(options.ErrOut, "service %s (PID %d) failed: %v; log: %s\n", event.Service, event.Process.PID, event.Error, live.LogPaths[event.Service])
+				for _, line := range logManager.Tail(event.Service) {
+					fmt.Fprintln(options.ErrOut, line)
+				}
+			}
+			live.Services[event.Service] = value
+			writeLive()
+			if event.State == supervisor.StateReady {
+				if item, ok := routeForService(resolvedPlan.Routes, event.Service); ok && item.Available {
+					fmt.Fprintf(options.Out, "public URL: %s\n", item.URL)
+				}
+				for label, endpoint := range resolvedPlan.Services[event.Service].Endpoints {
+					fmt.Fprintf(options.Out, "%s %s: %s\n", event.Service, label, endpoint)
+				}
+			}
+		},
+	})
+	stopPoll()
+	<-pollDone
+	refreshRoutes()
+	last.FinalStates = make(map[string]string)
+	last.CleanupErrors = result.CleanupErrors
+	for name, value := range result.States {
+		last.FinalStates[name] = string(value)
 	}
-	if processErr != nil {
-		return fmt.Errorf("service %q failed: %w", serviceName, processErr)
-	}
-	return nil
+	return errors.Join(err, stateErr)
 }
 
-func waitForProcess(ctx context.Context, process *command.Process) error {
-	done := make(chan error, 1)
-	go func() { done <- process.Wait() }()
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		return nil
-	}
+type synchronizedWriter struct {
+	mu     *sync.Mutex
+	writer io.Writer
+}
+
+func (w synchronizedWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writer.Write(data)
 }
 
 func routeForService(routes plan.Routes, service string) (plan.Route, bool) {
@@ -423,28 +364,20 @@ func environmentFromProcess() map[string]string {
 	return result
 }
 
-func environmentList(values env.Values) []string {
-	mapValues := values.Map(true)
-	keys := make([]string, 0, len(mapValues))
-	for key := range mapValues {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	result := make([]string, 0, len(keys))
-	for _, key := range keys {
-		result = append(result, key+"="+mapValues[key])
-	}
-	return result
-}
-
-func sessionEnvironment(values env.Values, id identity.Identity, routes plan.Routes, service string) []string {
-	base := environmentList(values)
+func sessionValues(id identity.Identity, routes plan.Routes, service string) map[string]string {
 	replacements := map[string]string{
 		"WEBPORT_PROJECT": id.Project,
 		"WEBPORT_BRANCH":  id.Branch,
 		"WEBPORT_ROUTE":   id.Project + ":" + id.Branch,
+		// Generic route context must not opt this child into independent
+		// daemon discovery before the supervisor publishes its ready lease.
+		"WEBPORT_SESSION_MANAGED": "1",
+		"WEBPORT_HOST":            "", "WEBPORT_URL": "", "WEBPORT_APP_PORT": "",
 	}
 	if item, ok := routeForService(routes, service); ok {
+		replacements["WEBPORT_PROJECT"] = item.Project
+		replacements["WEBPORT_BRANCH"] = item.Branch
+		replacements["WEBPORT_ROUTE"] = item.Project + ":" + item.Branch
 		if item.Host != "" {
 			replacements["WEBPORT_HOST"] = item.Host
 			replacements["WEBPORT_URL"] = item.URL
@@ -453,29 +386,7 @@ func sessionEnvironment(values env.Values, id identity.Identity, routes plan.Rou
 			replacements["WEBPORT_APP_PORT"] = fmt.Sprint(item.Port)
 		}
 	}
-	return replaceEnvironment(base, replacements)
-}
-
-func replaceEnvironment(base []string, replacements map[string]string) []string {
-	result := make([]string, 0, len(base)+len(replacements))
-	for _, item := range base {
-		name, _, found := strings.Cut(item, "=")
-		if found {
-			if _, replace := replacements[name]; replace {
-				continue
-			}
-		}
-		result = append(result, item)
-	}
-	keys := make([]string, 0, len(replacements))
-	for name := range replacements {
-		keys = append(keys, name)
-	}
-	sort.Strings(keys)
-	for _, name := range keys {
-		result = append(result, name+"="+replacements[name])
-	}
-	return result
+	return replacements
 }
 
 func expandCommand(service plan.Service, values env.Values, runtime env.Runtime) ([]string, string, error) {
@@ -500,11 +411,4 @@ func expandCommand(service plan.Service, values env.Values, runtime env.Runtime)
 
 func filepathForSecretStore(id identity.Identity) string {
 	return id.ConfigDirectory + string(os.PathSeparator) + ".webport" + string(os.PathSeparator) + "secrets.json"
-}
-
-func shutdownGrace(service plan.Service) time.Duration {
-	if service.Shutdown != nil && service.Shutdown.GracePeriod.Duration() > 0 {
-		return service.Shutdown.GracePeriod.Duration()
-	}
-	return 5 * time.Second
 }

@@ -1,5 +1,6 @@
 // Package state stores live session metadata and provides its local control
-// transport. Secrets and control tokens are deliberately excluded from files.
+// transport. The private live file holds the control credential; retained
+// summaries and public inspection output exclude it and application secrets.
 package state
 
 import (
@@ -72,6 +73,8 @@ type ProcessIdentity struct {
 	PID       int    `json:"pid"`
 	StartTime string `json:"start_time,omitempty"`
 }
+
+func IdentifyProcess(pid int) ProcessIdentity { return currentProcessIdentity(pid) }
 
 type LastSession struct {
 	SchemaVersion int                   `json:"schema_version"`
@@ -291,6 +294,11 @@ func Dial(ctx context.Context, path, token string, request Request) (Response, e
 	}
 	defer connection.Close()
 	request.SchemaVersion = 1
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = connection.SetDeadline(deadline)
+	}
+	stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stop()
 	request.Token = token
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return Response{}, err

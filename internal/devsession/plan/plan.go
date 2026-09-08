@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -15,11 +17,66 @@ import (
 	"github.com/webportdev/webport/internal/devsession/ports"
 	"github.com/webportdev/webport/internal/devsession/primitives"
 	"github.com/webportdev/webport/internal/route"
+	"gopkg.in/yaml.v3"
 )
 
 var reservedOperations = map[string]struct{}{
 	"check": {}, "config": {}, "status": {}, "logs": {},
 	"env": {}, "exec": {}, "stop": {}, "clean": {},
+}
+
+// Select limits runtime preflight to the requested dependency closure. Ports
+// referenced by shared environment values remain part of that closure.
+func Select(cfg config.Config, options BuildOptions) (config.Config, error) {
+	if err := validateNames(cfg); err != nil {
+		return config.Config{}, err
+	}
+	profile, roots, err := selectRoots(cfg, options)
+	if err != nil {
+		return config.Config{}, err
+	}
+	if err := validateDependencies(cfg.Services); err != nil {
+		return config.Config{}, err
+	}
+	closure := dependencyClosure(cfg.Services, roots)
+	if _, err := topologicalOrder(cfg.Services, closure); err != nil {
+		return config.Config{}, err
+	}
+	selected := cfg
+	selected.Profiles = make(map[string]config.Profile)
+	if item, ok := cfg.Profiles[profile]; ok {
+		selected.Profiles[profile] = item
+	}
+	selected.Services = make(map[string]config.Service)
+	selected.Ports = make(map[string]config.Port)
+	for name := range closure {
+		selected.Services[name] = cfg.Services[name]
+	}
+	data, err := yaml.Marshal(struct {
+		Env      map[string]config.Value
+		Profile  config.Profile
+		Services map[string]config.Service
+	}{cfg.Env, cfg.Profiles[profile], selected.Services})
+	if err != nil {
+		return config.Config{}, err
+	}
+	used := make(map[string]bool)
+	for _, match := range regexp.MustCompile(`\$\{ports\.([^{}]+)\}`).FindAllStringSubmatch(string(data), -1) {
+		used[match[1]] = true
+	}
+	for _, service := range selected.Services {
+		if service.Route != nil {
+			used[service.Route.Port] = true
+		}
+	}
+	for name := range used {
+		spec, ok := cfg.Ports[name]
+		if !ok {
+			return config.Config{}, fmt.Errorf("unknown port %q", name)
+		}
+		selected.Ports[name] = spec
+	}
+	return selected, nil
 }
 
 type BuildOptions struct {
@@ -128,18 +185,27 @@ func Build(cfg config.Config, id identity.Identity, options BuildOptions) (Plan,
 	}, nil
 }
 
-func (p Plan) JSON() ([]byte, error) {
+func (p Plan) JSON(showSensitive ...bool) ([]byte, error) {
 	var output bytes.Buffer
 	encoder := json.NewEncoder(&output)
 	encoder.SetEscapeHTML(false)
 	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(p.redacted()); err != nil {
+	view := p.redacted()
+	if len(showSensitive) > 0 && showSensitive[0] {
+		view.Environment = visibleValues(p.Environment)
+		for name, service := range p.Services {
+			value := view.Services[name]
+			value.Environment = visibleValues(service.Env)
+			view.Services[name] = value
+		}
+	}
+	if err := encoder.Encode(view); err != nil {
 		return nil, err
 	}
 	return bytes.TrimSuffix(output.Bytes(), []byte{'\n'}), nil
 }
 
-func (p Plan) Human() string {
+func (p Plan) Human(showSensitive ...bool) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "development session plan\nprofile: %s\nworktree: %s\nscope: %s\n", p.Profile, p.Identity.WorktreeRoot, p.Identity.Scope)
 	fmt.Fprintf(&builder, "services:\n")
@@ -153,7 +219,15 @@ func (p Plan) Human() string {
 		}
 		if len(service.Env) > 0 {
 			builder.WriteString(" env=")
-			builder.WriteString(formatEnv(service.Env))
+			values := service.Env
+			if len(showSensitive) > 0 && showSensitive[0] {
+				values = copyValues(values)
+				for name, v := range values {
+					v.Sensitive = false
+					values[name] = v
+				}
+			}
+			builder.WriteString(formatEnv(values))
 		}
 		builder.WriteByte('\n')
 	}
@@ -360,6 +434,28 @@ func topologicalOrder(services map[string]config.Service, closure map[string]str
 }
 
 func validateService(name string, service config.Service, id identity.Identity) error {
+	if len(service.Platform) > 0 {
+		allowed := false
+		for _, platform := range service.Platform {
+			if platform != "linux" && platform != "darwin" {
+				return fmt.Errorf("service %q: invalid platform %q", name, platform)
+			}
+			allowed = allowed || platform == runtime.GOOS
+		}
+		if !allowed {
+			return fmt.Errorf("service %q is unavailable on %s", name, runtime.GOOS)
+		}
+	}
+	if service.Shutdown != nil {
+		switch service.Shutdown.Signal {
+		case "", "inherit", "SIGINT", "SIGTERM", "SIGHUP", "SIGKILL":
+		default:
+			return fmt.Errorf("service %q: invalid shutdown signal", name)
+		}
+		if service.Shutdown.GracePeriod < 0 || service.Shutdown.Timeout < 0 {
+			return fmt.Errorf("service %q: shutdown durations must not be negative", name)
+		}
+	}
 	if len(service.Command) == 0 && service.Shell == "" {
 		return fmt.Errorf("service %q must define command or shell", name)
 	}
@@ -380,6 +476,9 @@ func validateService(name string, service config.Service, id identity.Identity) 
 		}
 		if service.Ready.HTTP != nil {
 			checks++
+			if service.Ready.HTTP.Interval < 0 || service.Ready.HTTP.Timeout < 0 || service.Ready.HTTP.OverallTimeout < 0 {
+				return fmt.Errorf("service %q: readiness durations must not be negative", name)
+			}
 			if service.Ready.HTTP.URL == "" {
 				return fmt.Errorf("service %q HTTP readiness URL is required", name)
 			}
@@ -395,6 +494,15 @@ func validateService(name string, service config.Service, id identity.Identity) 
 		return fmt.Errorf("service %q route port is required", name)
 	}
 	if service.Logs != nil {
+		if service.Logs.Mode != "" && service.Logs.Mode != "append" && service.Logs.Mode != "truncate" {
+			return fmt.Errorf("service %q: invalid log mode", name)
+		}
+		if service.Logs.Streams != "" && service.Logs.Streams != "combined" && service.Logs.Streams != "separate" {
+			return fmt.Errorf("service %q: invalid log streams", name)
+		}
+		if service.Logs.MaxBytes < 0 || service.Logs.Backups < 0 {
+			return fmt.Errorf("service %q: invalid log rotation bounds", name)
+		}
 		if service.Logs.Destination != "" && service.Logs.Destination != "none" && service.Logs.Destination != "file" && service.Logs.Destination != "directory" {
 			return fmt.Errorf("service %q has invalid log destination %q", name, service.Logs.Destination)
 		}
@@ -475,6 +583,16 @@ func redactedValues(values map[string]config.Value) map[string]string {
 			result[name] = *value.Literal
 		} else {
 			result[name] = "<unset>"
+		}
+	}
+	return result
+}
+
+func visibleValues(values map[string]config.Value) map[string]string {
+	result := redactedValues(values)
+	for name, value := range values {
+		if value.Literal != nil {
+			result[name] = *value.Literal
 		}
 	}
 	return result

@@ -85,3 +85,25 @@ func TestCheckRejectsMultipleReadinessKindsAndTimesOut(t *testing.T) {
 		t.Fatalf("timeout = %+v, %v", result, err)
 	}
 }
+
+func TestHTTPConfiguredIntervalAndOverallTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
+	defer server.Close()
+	started := time.Now()
+	result, err := Check(context.Background(), &config.Ready{HTTP: &config.HTTPReady{
+		URL: server.URL, Interval: config.Duration(5 * time.Millisecond), OverallTimeout: config.Duration(80 * time.Millisecond),
+	}}, Options{OverallTimeout: time.Second, Interval: time.Second})
+	if err == nil || result.Attempts < 3 || time.Since(started) > 500*time.Millisecond {
+		t.Fatalf("HTTP timing = %+v, %v", result, err)
+	}
+}
+
+func TestCommandReadinessHasPerProbeTimeout(t *testing.T) {
+	started := time.Now()
+	result, err := Check(context.Background(), &config.Ready{Command: []string{"sh", "-c", "exec sleep 10"}}, Options{
+		ProbeTimeout: 20 * time.Millisecond, OverallTimeout: 150 * time.Millisecond, Interval: time.Millisecond,
+	})
+	if err == nil || result.Attempts < 3 || time.Since(started) > time.Second {
+		t.Fatalf("command timing = %+v, %v", result, err)
+	}
+}

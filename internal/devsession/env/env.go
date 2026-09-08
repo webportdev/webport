@@ -24,6 +24,26 @@ type Values struct {
 	entries map[string]Entry
 }
 
+func (v Values) With(values map[string]string) Values {
+	entries := make(map[string]Entry, len(v.entries)+len(values))
+	for name, entry := range v.entries {
+		entries[name] = entry
+	}
+	for name, value := range values {
+		entries[name] = Entry{Value: value}
+	}
+	return Values{entries: entries}
+}
+
+func (v Values) ConfigValues() map[string]config.Value {
+	result := make(map[string]config.Value, len(v.entries))
+	for name, entry := range v.entries {
+		value := entry.Value
+		result[name] = config.Value{Literal: &value, Sensitive: entry.Sensitive}
+	}
+	return result
+}
+
 type Runtime struct {
 	Project string
 	Branch  string

@@ -15,13 +15,14 @@ import (
 )
 
 const (
-	routeEnv       = "WEBPORT_ROUTE"
-	portEnv        = "WEBPORT_APP_PORT"
-	clientTokenEnv = "WEBPORT_CLIENT_TOKEN"
+	routeEnv          = "WEBPORT_ROUTE"
+	portEnv           = "WEBPORT_APP_PORT"
+	clientTokenEnv    = "WEBPORT_CLIENT_TOKEN"
+	sessionManagedEnv = "WEBPORT_SESSION_MANAGED"
 )
 
 func isDiscoveryEnvKey(key string) bool {
-	return key == routeEnv || key == portEnv || key == clientTokenEnv
+	return key == routeEnv || key == portEnv || key == clientTokenEnv || key == sessionManagedEnv
 }
 
 type listener struct {
@@ -56,7 +57,7 @@ func (s Scanner) Scan(ctx context.Context) ([]route.Route, []error) {
 	}
 
 	for _, proc := range processes {
-		if s.ClientToken != "" && proc.env[clientTokenEnv] != s.ClientToken {
+		if !s.acceptsProcess(proc) {
 			continue
 		}
 		spec := strings.TrimSpace(proc.env[routeEnv])
@@ -84,6 +85,15 @@ func (s Scanner) Scan(ctx context.Context) ([]route.Route, []error) {
 	}
 
 	return discovered, errs
+}
+
+func (s Scanner) acceptsProcess(proc process) bool {
+	if s.ClientToken != "" {
+		return proc.env[clientTokenEnv] == s.ClientToken
+	}
+	// Configured foreground sessions publish their own readiness-gated
+	// leases. Their generic route environment is context, not an opt-in.
+	return proc.env[sessionManagedEnv] != "1"
 }
 
 func selectListener(ctx context.Context, proc process, timeout time.Duration) (listener, error) {

@@ -20,6 +20,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -213,9 +214,25 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 		if len(positional) == 1 {
 			service = positional[0]
 		}
-		return devsession.Run(context.Background(), devsession.Options{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		defer signal.Stop(signals)
+		var received atomic.Int32
+		received.Store(int32(syscall.SIGTERM))
+		go func() {
+			select {
+			case sig := <-signals:
+				received.Store(int32(sig.(syscall.Signal)))
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		return devsession.Run(ctx, devsession.Options{
 			ConfigPath: configPath, Profile: profile, Service: service, API: values.api,
 			In: in, Out: out, ErrOut: errOut,
+			StopSignal: func() os.Signal { return syscall.Signal(received.Load()) },
 		})
 	}
 	if format != "" && format != "json" && format != "env" {
@@ -411,6 +428,7 @@ func runDevInspection(operation string, operationArgs []string, configPath, prof
 	options := devsession.Options{ConfigPath: configPath, Profile: profile, API: api, In: in, Out: out}
 	switch operation {
 	case "check", "config":
+		options.PreferLive, options.ShowSensitive = operation == "config", showSensitive
 		resolved, err := devsession.InspectConfig(context.Background(), options)
 		if err != nil {
 			return err
@@ -420,14 +438,14 @@ func runDevInspection(operation string, operationArgs []string, configPath, prof
 			return err
 		}
 		if format == "json" {
-			encoded, encodeErr := resolved.JSON()
+			encoded, encodeErr := resolved.JSON(showSensitive)
 			if encodeErr != nil {
 				return encodeErr
 			}
 			_, err = fmt.Fprintln(out, string(encoded))
 			return err
 		}
-		_, err = io.WriteString(out, resolved.Human())
+		_, err = io.WriteString(out, resolved.Human(showSensitive))
 		return err
 	case "status":
 		value, err := devsession.Status(options)

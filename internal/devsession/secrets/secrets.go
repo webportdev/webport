@@ -46,11 +46,34 @@ func NewStore(path string) (Store, error) {
 	return Store{Path: filepath.Clean(path)}, nil
 }
 
+// PreviewValues validates generators without reading or writing secret state.
+// A placeholder retains sensitivity, so secret-to-argv checks still apply.
+func PreviewValues(values map[string]config.Value) (map[string]config.Value, error) {
+	result := make(map[string]config.Value, len(values))
+	for name, value := range values {
+		if value.Generate != nil {
+			if value.Literal != nil {
+				return nil, fmt.Errorf("generated value %q: value and generate are mutually exclusive", name)
+			}
+			if err := validatePolicy(*value.Generate); err != nil {
+				return nil, fmt.Errorf("generated value %q: %w", name, err)
+			}
+			placeholder := "<generated>"
+			value = config.Value{Literal: &placeholder, Sensitive: true}
+		}
+		result[name] = value
+	}
+	return result, nil
+}
+
 // ResolveValues converts generated config values into literals. Session values
 // are generated for this call only. Project values are loaded or atomically
 // persisted through store and are never returned in diagnostics by this
 // package.
 func ResolveValues(values map[string]config.Value, store Store, randomSource io.Reader) (map[string]config.Value, error) {
+	if _, err := PreviewValues(values); err != nil {
+		return nil, err
+	}
 	result := make(map[string]config.Value, len(values))
 	projectPolicies := make(map[string]config.Generate)
 	for name, value := range values {
