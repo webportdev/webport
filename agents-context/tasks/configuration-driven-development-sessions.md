@@ -13,7 +13,8 @@ resume without reconstructing completed work from the repository diff.
 | --- | --- | --- |
 | 1 | complete | Version 1 contract frozen in `docs/configuration-driven-development-sessions.md`. |
 | 2 | complete | Added stream-aware CLI dispatch, canonical Git worktree detection, injectable session primitives, and `internal/devsession/daemon` with `/config`, lease, heartbeat/recovery, release, and legacy-route compatibility. Focused tests pass. |
-| 3–22 | pending | Not started. |
+| 3 | complete | Added strict, side-effect-free YAML loading under `internal/devsession/config`: upward/worktree-bounded discovery, explicit config selection, primary/local tree merge, duplicate/unknown-key/type/duration/version diagnostics, and typed unresolved configuration. Focused tests pass. |
+| 4–22 | pending | Not started. |
 
 ## Target outcome
 
