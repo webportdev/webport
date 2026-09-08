@@ -1,9 +1,11 @@
 # webport - Traefik Route Manager for Development Servers
 
 webport publishes HTTPS routes for local development servers by writing
-Traefik file-provider configuration. Routes can be registered through the REST
-API/`webportctl` or discovered from opted-in local processes. Manual routes
-expire unless refreshed; discovered routes are reconciled with process state.
+Traefik file-provider configuration. Routes can be registered through
+`webport`, the REST API, or `webportctl`. The zero-configuration wrapper and
+configured sessions discover listeners in the developer's process context;
+legacy daemon-side process discovery is disabled by default. Manual routes
+expire unless refreshed.
 
 Route hostnames use:
 
@@ -16,8 +18,13 @@ For example, `myapp` plus `feature/auth` becomes
 
 ## Current Architecture
 
-- `webport` is the daemon. It owns the in-memory route store, REST API, TTL
-  checker, process discovery, TLS setup, and Traefik dynamic configuration.
+- `webport` is both the daemon and the user-facing CLI. The daemon owns the
+  in-memory route store, REST API, TTL checker, TLS setup, and Traefik dynamic
+  configuration. Legacy daemon-side process discovery is an opt-in migration
+  path.
+- `webport dev` owns the foreground wrapper or configured multi-service
+  session, including process supervision, readiness, named ports, route leases,
+  logs, exports, and authenticated session control.
 - Traefik watches the generated YAML through its file provider. webport
   atomically replaces the file; it does not invoke a reload command.
 - `webportctl` registers a manual route, sends heartbeats, and unregisters it
@@ -38,13 +45,14 @@ publishes a route-free Traefik configuration, and shuts down the HTTP server.
 ```text
 webport/
 ├── cmd/
-│   ├── webport/                 # Daemon entry point and systemd notification
+│   ├── webport/                 # Daemon and unified CLI
 │   ├── webportctl/              # Route lifecycle client, Git detection
 │   └── webport-dns/             # Wildcard DNS status/sync CLI
 ├── internal/
 │   ├── api/                     # REST handlers
 │   ├── config/                  # Daemon environment configuration
-│   ├── discovery/               # Linux/macOS opted-in process discovery
+│   ├── discovery/               # Linux/macOS legacy daemon discovery
+│   ├── devsession/              # Configured foreground session runtime
 │   ├── dnsmanager/              # Provider-independent wildcard DNS logic
 │   ├── localca/                 # Private CA and wildcard leaf lifecycle
 │   ├── route/                   # Route types, domains, store, and TTL checker
@@ -69,6 +77,13 @@ webport/
 | `POST` | `/routes/{project}:{branch}/heartbeat` | Refresh a manual route TTL |
 | `GET` | `/config` | Return base domain, TTL, TLS mode, and optional CA path |
 | `GET` | `/health` | Return `OK` |
+| `GET` | `/ready` | Return publication readiness |
+| `GET` | `/status` | Return daemon publication and lease status |
+
+The preferred lease API is `POST /v1/leases`,
+`POST /v1/leases/{lease_id}/heartbeat`, and
+`DELETE /v1/leases/{lease_id}`. The `/routes` endpoints remain for legacy
+clients.
 
 Registration body:
 
@@ -97,8 +112,9 @@ replaces branch slashes with dashes.
 
 - `route.Store` protects its map with `sync.RWMutex`; `List` returns a snapshot.
 - Manual routes have source `manual` and are removed by the TTL checker.
-- Discovered routes have source `process`, do not use TTL expiration, and are
-  atomically reconciled from process scans.
+- Legacy daemon-discovered routes have source `process`, do not use TTL
+  expiration, and are atomically reconciled from process scans. Configured
+  session routes use renewable leases and are activated after readiness.
 - A manual route wins over a discovered route with the same identity.
 - Ambiguous discovery claims fail closed. A vanished discovered route is
   retained for one scan and removed after the second consecutive miss.
@@ -107,8 +123,10 @@ replaces branch slashes with dashes.
 
 ## Process Discovery
 
-Discovery is supported on Linux and macOS and enabled by default. A process
-opts in with an unambiguous route identity:
+The preferred discovery path is the `webport dev` wrapper or a configured
+session. Legacy daemon-side discovery is supported on Linux and macOS but is
+disabled by default. A legacy process opts in with an unambiguous route
+identity:
 
 ```bash
 WEBPORT_ROUTE='myapp:feature/auth' npm run dev
@@ -154,10 +172,10 @@ Never expose or trust `ca.key`; clients trust only `ca.crt`.
 | `WEBPORT_LOCAL_CA_DIR` | `webport-pki` beside generated YAML | Local CA state |
 | `WEBPORT_LISTEN_HOST` | `127.0.0.1` | REST listen host |
 | `WEBPORT_PORT` | `8080` | REST listen port |
-| `WEBPORT_DEFAULT_TTL` | `300s` | Default manual-route lifetime |
-| `WEBPORT_TTL_CHECK_INTERVAL` | `30s` | Expiration scan interval |
+| `WEBPORT_DEFAULT_TTL` | `30s` | Default manual-route lifetime |
+| `WEBPORT_TTL_CHECK_INTERVAL` | `10s` | Expiration scan interval |
 | `WEBPORT_SHUTDOWN_TIMEOUT` | `5s` | HTTP shutdown timeout |
-| `WEBPORT_DISCOVERY_ENABLED` | `true` | Enable process discovery |
+| `WEBPORT_DISCOVERY_ENABLED` | `false` | Enable legacy daemon process discovery |
 | `WEBPORT_DISCOVERY_INTERVAL` | `2s` | Discovery reconciliation interval |
 
 `webport-dns` additionally reads `WEBPORT_DNS_PROVIDER`,

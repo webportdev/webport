@@ -1,6 +1,8 @@
 # Development tasks: configuration-driven development sessions
 
-This document breaks `agents-context/feature-request.md` into an ordered implementation plan. It covers the version 1 release described by delivery phases 1 through 3. Phase 4 ideas are recorded as deferred work and must not delay the initial release.
+This document records the completed implementation plan for the version 1
+release described by delivery phases 1 through 3. Phase 4 ideas are recorded
+as deferred work for follow-up releases.
 
 No implementation code is included here.
 
@@ -85,8 +87,8 @@ Work:
 - Define the visibility and precedence of `route.export` aliases: which services receive them, whether they participate in `${env.NAME}` interpolation, and how name collisions are rejected.
 - Resolve the same-project/same-branch worktree case. The draft requires same-branch worktrees to be locally isolated but the current route identity would collide; specify whether public routing requires an explicit identity override, gains a documented worktree discriminator, or fails preflight while loopback-only services continue.
 - Resolve scope inconsistencies in the draft:
-  - `discover: true` ports belong in v1 even though phase 1 only includes fixed/first-free allocation; schedule them for phase 2.
-  - `restart: on-failure`, alternate failure policies, platform constraints, and generated container examples are phase 3 only if explicitly accepted into v1; otherwise defer them.
+  - `discover: true` ports are part of v1 and are limited to one owned listener per configured service.
+  - Platform constraints are part of v1 for the supported Linux and macOS hosts. Restart policies, alternate failure policies, and generated container examples remain deferred.
   - continuous health checks, detached sessions, `init`, includes, and editor schemas remain out of scope.
 - Define stable human, JSON, and env output schemas and versioning expectations. Distinguish daemon commands such as `webport status`/`webport config` from session commands such as `webport dev status`/`webport dev config`.
 - Distinguish ephemeral terminal diagnostics from retained summaries: a live failure message may include the failed PID, while the retained last-session record must not keep reusable PIDs.
@@ -255,7 +257,7 @@ Resolve a unique port set before commands are started.
 
 Work:
 
-- Support fixed, first-free-at-or-above, and inclusive-range random allocation, plus phase-2 `discover: true` ownership for a service that selects its own listener.
+- Support fixed, first-free-at-or-above, inclusive-range random allocation, and `discover: true` ownership for a service that selects its own listener.
 - Validate bounds and ensure every resolved non-discovered port is unique in the session.
 - Probe host availability on loopback before launch. Define IPv4/IPv6 behavior consistently with the backend host passed to routes.
 - Associate each allocated port with its owning service so startup can perform a bounded reallocation/replan when a port race is detected before that owner becomes ready.
@@ -559,7 +561,7 @@ Work:
 - Update `README.md`, CLI help, and `docs/architecture.md` with config discovery/merge, full schema, profiles, lifecycle semantics, environment precedence, routes, security, state paths, logs, cleanup, and command examples.
 - Add a complete reviewed `.webport.yaml` example modeling Cortex's reusable orchestration while leaving migrations/bootstrap commands project-owned.
 - Add ordinary Docker, Podman, attached Compose, detached Compose, wait-monitor, and log-follower examples. Clearly distinguish Webport timeout from runtime-tool timeout and avoid destructive cleanup examples by default.
-- Document limitations: no detached mode, no runtime-specific state inference, no arbitrary runtime-port capture, no continuous health, no content-based child-log secret scrubbing, and no cleanup after SIGKILL/power loss.
+- Document limitations: no detached mode, no runtime-specific state inference, no unconfigured runtime-port capture, no continuous health, no content-based child-log secret scrubbing, and no cleanup after SIGKILL/power loss.
 - Update `verify.md` with a two-worktree manual scenario and foreground stop/failure checks.
 - Run formatting, focused package tests during fixes, `go test ./...`/`mise run test`, `go vet ./...`/`mise run lint`, and cross-builds for Linux/macOS amd64/arm64. Run installer suites only if installation assets or behavior changed.
 - Test a real Cortex conversion or equivalent representative project and record any contract corrections before declaring the feature complete.
@@ -580,7 +582,7 @@ Done when:
 - [ ] Any required process exit ends the session, reports its status/signal and log tail, and returns nonzero.
 - [ ] Ctrl+C and `webport dev stop` terminate process groups, release routes, run reverse-order bounded shutdown, and remove live state/exports.
 - [ ] Persistent project data and project-lifetime secrets survive ordinary shutdown; only explicit configured commands or `clean --secrets` remove them.
-- [ ] Known sensitive values and internal tokens are absent from default output, Webport logs, argv, live non-secret metadata, and retained summaries.
+- [ ] Known sensitive values and internal tokens are absent from Webport-generated default output, argv, live non-secret metadata, and retained summaries; child output remains intentionally unsanitized.
 - [ ] `webport dev [route options] -- COMMAND` retains its existing lifecycle and passthrough behavior whether or not a project config exists.
 - [ ] `webport status`/`webport config` still describe the daemon, while `webport dev status`/`webport dev config` clearly describe the project session.
 - [ ] Linux and macOS builds and process-cleanup tests pass.

@@ -150,12 +150,15 @@ cycle detection:
 
 Expansion is literal and has no shell, command, glob, or escape processing.
 Values are tracked with sensitivity metadata. Sensitive values and values
-derived from them are redacted in human output, status/config JSON, errors,
-logs, runtime metadata, and the retained summary. Sensitive interpolation in
-an argument-array element or shell command is rejected; a child must receive
+derived from them are redacted in Webport-generated human output, status/config
+JSON, errors, runtime metadata, and the retained summary. Webport does not
+scrub arbitrary child stdout/stderr before it reaches the terminal or a log
+mirror, so applications should avoid printing secrets. Sensitive interpolation
+in an argument-array element or shell command is rejected; a child must receive
 that value through its environment. `--show-sensitive` may reveal values only
-in explicitly interactive `config`/`env` output, never in logs or persisted
-metadata.
+in explicitly interactive `config`/`env` output. Configured export files are a
+separate, mode-0600 opt-in artifact that contains the resolved values while the
+session is active.
 
 Generated values require a positive `length` and exactly one of `sets` or
 `alphabet`. Named sets are `lower`, `upper`, `digit`, `hex`, and `base64url`.
@@ -163,19 +166,21 @@ The default lifetime is `session`; `project` values are stored as plaintext
 plus policy metadata in a separate mode-0600, worktree-scoped secret file and
 may be removed only by `webport dev clean --secrets`. That file is the only
 ordinary persistent artifact containing the generated value; session state,
-exports after shutdown, logs, plans, and summaries do not contain it.
+exports after shutdown, plans, and summaries do not contain it. A child that
+prints an environment value can still place it in terminal output or a log
+mirror.
 Generation uses `crypto/rand`.
 
 ### Ports, services, readiness, and shutdown
 
 Each port entry contains exactly one of `fixed`, `first_free`, `random`, or
 `discover`. `fixed` and `first_free` are integers; `random` is an inclusive
-two-integer range. Resolved ports are unique and checked on loopback before
-startup. Dynamic ports are rechecked immediately before their owning service
-starts; a first-free or random port is replanned if it lost a race. A
+two-integer range. Allocated ports are unique and checked on loopback before
+startup. Dynamic allocations are rechecked immediately before their owning
+service starts; a first-free or random port is replanned if it lost a race. A
 discovered port is selected from the owning process's loopback listener after
 launch and becomes available to dependent services, readiness checks,
-endpoints, and routes.
+endpoints, and routes. One discovered port is supported per service.
 
 Each service contains exactly one of `command` (an argument array) or `shell`
 (an explicit platform shell string). `completion: process` is the default and
@@ -283,7 +288,7 @@ the checkout. Logs and exports are mode `0600`; log files may remain after
 shutdown, exports are removed, and project secrets remain only until
 `webport dev clean --secrets`. Webport does
 not provide detached sessions, infer state from Docker/Podman/Compose, capture
-arbitrary runtime-assigned ports, perform continuous health checks, scrub
+unconfigured runtime-assigned ports, perform continuous health checks, scrub
 arbitrary child output for secrets, or clean up after SIGKILL or power loss.
 
 ### Generic runtime examples
@@ -318,7 +323,6 @@ webport dev logs backend --follow
 Detached sessions, `init`, includes, editor schemas, continuous health checks,
 automatic restart policies, alternate failure policies, CLI environment
 overrides, and provider/framework-specific service types are explicitly
-deferred. Phase-2 `discover: true` ports and phase-3 platform constraints,
-restart policies, and generated container examples are accepted only where
-their schema entries above are used; they must not broaden the generic command
-model or weaken preflight/security rules.
+deferred. `discover: true` ports and the `platform` constraint are part of
+version 1, with discovery limited to one listener owned by each configured
+service and platform values limited to the supported host operating systems.

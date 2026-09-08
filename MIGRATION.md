@@ -1,7 +1,8 @@
 # Migrating to the unified webport workflow
 
-The redesigned release keeps the existing API and helper binaries for one
-migration release. New documentation and installations use `webport`.
+Version 0.1.0 is the migration release for the unified workflow. It keeps the
+existing API and helper binaries for compatibility while new documentation and
+installations use `webport`.
 
 ## Command mapping
 
@@ -71,4 +72,3 @@ calling user, and maintains a lease.
 Existing installations that deliberately require system-wide discovery may
 temporarily retain the legacy root configuration, but it is deprecated and
 should not be used for new projects.
-

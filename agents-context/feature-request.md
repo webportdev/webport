@@ -1,6 +1,6 @@
 # Feature request: configuration-driven development sessions
 
-Status: draft for discussion
+Status: implemented in v0.1.0; retained as the design record
 
 ## Summary
 
@@ -921,8 +921,9 @@ commands, while preserving these properties:
    command in reverse dependency order, removes live state and exports, retains
    a redacted final record, and preserves PostgreSQL and MinIO data because the
    configured commands do not delete it.
-9. Generated secrets are absent from normal terminal output, Webport logs,
-   route status, and process arguments.
+9. Generated secrets are absent from Webport-generated terminal diagnostics,
+   route status, and process arguments. Child stdout/stderr is mirrored as-is
+   and is outside Webport's content-based secret-redaction guarantee.
 10. Projects which do not adopt a configuration file see no behavior change in
     `webport dev -- COMMAND`.
 

@@ -108,7 +108,10 @@ selects the original wrapper path, so `webport dev -- npm run dev` remains
 valid even when a configuration file is present. Status/config output is
 redacted by default; project-lifetime generated values live only in a
 mode-`0600` per-user runtime secret store keyed by the worktree and are never
-written to Webport logs or retained session metadata.
+written to Webport-generated diagnostics or retained session metadata.
+Configured export files intentionally contain resolved environment values while
+the session is active, are mode `0600`, and are removed during clean shutdown.
+Child output is mirrored as-is, so applications should avoid printing secrets.
 
 ## Public domains
 
@@ -168,14 +171,21 @@ Unmanaged Caddy or Traefik installations are never replaced automatically.
 
 ## How route leases work
 
-1. `webport dev` starts the application and finds one HTTP listener.
+In the zero-configuration wrapper form (`webport dev -- COMMAND`):
+
+1. webport starts the application and finds one HTTP listener.
 2. It creates an opaque 30-second lease through the loopback API.
 3. The daemon validates route and hostname conflicts.
 4. The complete candidate Traefik document is generated and atomically
    published before the route is committed.
 5. The client renews every 10 seconds.
-6. Clean exit releases the lease; unclean exit is removed by expiry.
+6. Clean exit releases the lease; an unclean exit is removed by expiry.
 7. A daemon restart begins empty, and running clients re-register.
+
+Configured sessions allocate named ports and create one lease for each
+configured route after that service passes readiness. Discovered ports are
+filled from the owning service's listener and propagated to dependent services,
+readiness checks, endpoints, and route registration.
 
 Multiple clients can hold the same route when they agree on its backend port.
 One client exiting does not remove another client's route. Conflicting ports
@@ -247,8 +257,8 @@ reports version, uptime, route/lease counts, applied revision, and the latest
 redacted publication error.
 
 The legacy `POST /routes`, route-ID heartbeat, and delete endpoints remain
-available for one migration release. Branch slashes must still be escaped when
-using those legacy path-based IDs.
+available during the v0.1.0 migration release. Branch slashes must still be
+escaped when using those legacy path-based IDs.
 
 ## Configuration
 
@@ -268,6 +278,7 @@ The installer manages these environment values:
 | `WEBPORT_TTL_CHECK_INTERVAL` | `10s` | Expiration interval |
 | `WEBPORT_SHUTDOWN_TIMEOUT` | `5s` | HTTP shutdown timeout |
 | `WEBPORT_DISCOVERY_ENABLED` | `false` | Deprecated privileged discovery |
+| `WEBPORT_DISCOVERY_INTERVAL` | `2s` | Legacy discovery reconciliation interval |
 
 Invalid booleans, durations, ports, domains, or TLS combinations prevent
 startup with explicit errors; malformed values are not silently replaced.

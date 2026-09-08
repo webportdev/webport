@@ -125,6 +125,6 @@ plain file logs. Then verify:
 - [ ] `webport dev stop` performs graceful, bounded shutdown and removes live
   state/exports while retaining logs and the redacted final record.
 - [ ] `webport dev clean --secrets` removes project-lifetime secrets only
-  after the session is inactive.
+  after the session is inactive, including when cleanup races a new launch.
 - [ ] Existing `webport dev -- COMMAND` behavior is unchanged with or without
   a configuration file.

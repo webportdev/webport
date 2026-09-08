@@ -3,14 +3,16 @@
 ## Components
 
 - `webport daemon` owns the ephemeral lease registry, validation, REST API,
-  local CA lifecycle, and Traefik file publication.
-- `webport dev` runs in the developer's user session. It supervises one
-  process tree, discovers its listener without elevated privileges, and owns a
-  renewable route lease.
+  local CA lifecycle, and Traefik file publication. Legacy daemon-side process
+  discovery is disabled by default.
+- The zero-configuration `webport dev -- COMMAND` wrapper runs in the
+  developer's user session. It supervises one process tree, discovers its
+  listener without elevated privileges, and owns a renewable route lease.
 - A configured `webport dev` session resolves a worktree-scoped plan before
   launching commands, then owns the dependency graph, environment, ports,
-  readiness checks, route leases, logs, exports, authenticated control socket,
-  and graceful shutdown in the foreground process.
+  configured listener discovery, readiness checks, route leases, logs, exports,
+  authenticated control socket, and graceful shutdown in the foreground
+  process.
 - Traefik owns ports 80/443, public ACME state, and HTTPS proxying.
 - `webport dns` performs explicit persistent wildcard A/AAAA administration.
 
@@ -21,8 +23,9 @@ Configured-session runtime state is also intentionally ephemeral: a per-user
 worktree lock, live state file, and local control socket exist only while the
 foreground session runs. A redacted last-session record may remain for
 inspection. Project-lifetime generated secrets are kept separately in the
-per-user runtime state directory with mode `0600`; they are not copied into session
-state, logs, exports after shutdown, or summaries.
+per-user runtime state directory with mode `0600`; they are not copied into
+session metadata or summaries. Active configured export files intentionally
+contain resolved values, while child log mirrors remain raw child output.
 
 ## Route transaction
 
@@ -62,8 +65,10 @@ does require a publication transaction.
 
 The controller mutex serializes effective-route mutations and publication.
 The underlying store retains its own read/write lock for snapshots consumed by
-the API and Traefik generator. Process scanning is not part of the default
-daemon path.
+the API and Traefik generator. Process scanning is disabled in the default
+daemon configuration; configured sessions perform listener discovery in the
+developer's process context, while the legacy daemon scanner remains an
+explicit opt-in.
 
 ## Privilege boundary
 
