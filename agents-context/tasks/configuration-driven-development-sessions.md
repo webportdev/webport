@@ -21,7 +21,8 @@ resume without reconstructing completed work from the repository diff.
 | 8 | complete | Added generated-value and project-secret lifecycle under `internal/devsession/secrets`: secure policy generation, session/project lifetime handling, atomic user-only storage with policy metadata, explicit clean, and redaction metadata. Focused tests pass. |
 | 9 | complete | Added named-port allocation under `internal/devsession/ports`: fixed/first-free/random/discovered modes, loopback probing seams, deterministic ownership/uniqueness, bounded retry diagnostics, and discovered-port pre-start validation. Focused tests pass. |
 | 10 | complete | Added immutable plan construction in `internal/devsession/plan`: profile/service selection, dependency closure/cycles, deterministic topological order, command preflight, working-directory/port checks, route filtering, validation, and redacted human/JSON output. Focused tests pass. |
-| 11–22 | pending | Not started. |
+| 11 | complete | Added generic command runner under `internal/devsession/command`: direct argv/shell execution, platform process groups, structured lifecycle results, bounded termination, and concurrent lossless stdout/stderr capture with long/partial-line handling. Focused tests pass. |
+| 12–22 | pending | Not started. |
 
 ## Target outcome
 
