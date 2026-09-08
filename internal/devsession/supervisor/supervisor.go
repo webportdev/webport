@@ -50,20 +50,21 @@ type Result struct {
 }
 
 type Options struct {
-	Environments  map[string]env.Values
-	Runtime       env.Runtime
-	Out           io.Writer
-	ErrOut        io.Writer
-	SinkFactory   func(string) command.OutputSink
-	Runner        command.Runner
-	RouteManager  *routes.Manager
-	RoutePlans    []plan.Route
-	OnEvent       func(Event)
-	StopSignal    func() os.Signal
-	BeforeStart   func(context.Context, string) (StartPlan, error)
-	Discover      func(context.Context, string, int, []string) (map[string]int, error)
-	PortMu        *sync.RWMutex
-	EnvironmentMu *sync.RWMutex
+	Environments        map[string]env.Values
+	Runtime             env.Runtime
+	Out                 io.Writer
+	ErrOut              io.Writer
+	SinkFactory         func(string) command.OutputSink
+	Runner              command.Runner
+	RouteManager        *routes.Manager
+	RoutePlans          []plan.Route
+	RouteReleaseTimeout time.Duration
+	OnEvent             func(Event)
+	StopSignal          func() os.Signal
+	BeforeStart         func(context.Context, string) (StartPlan, error)
+	Discover            func(context.Context, string, int, []string) (map[string]int, error)
+	PortMu              *sync.RWMutex
+	EnvironmentMu       *sync.RWMutex
 }
 
 type StartPlan struct {
@@ -547,7 +548,13 @@ func runShutdownCommands(registered map[string]struct{}, sessionPlan plan.Plan, 
 func releaseRoutesAndShutdown(registered map[string]struct{}, sessionPlan plan.Plan, options Options) error {
 	var combined error
 	if options.RouteManager != nil {
-		combined = errors.Join(combined, options.RouteManager.ReleaseAll(context.Background()))
+		timeout := options.RouteReleaseTimeout
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		releaseCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		combined = errors.Join(combined, options.RouteManager.ReleaseAll(releaseCtx))
+		cancel()
 	}
 	return errors.Join(combined, runShutdownCommands(registered, sessionPlan, options))
 }

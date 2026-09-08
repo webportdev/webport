@@ -80,19 +80,20 @@ type Runtime struct {
 }
 
 type Input struct {
-	Inherited     map[string]string
-	DotenvFiles   []string
-	Top           map[string]config.Value
-	Profile       map[string]config.Value
-	Service       map[string]config.Value
-	Project       string
-	Branch        string
-	Scope         string
-	Ports         map[string]int
-	DeferredPorts map[string]struct{}
-	DeferRuntime  bool
-	Routes        plan.Routes
-	ServiceName   string
+	Inherited          map[string]string
+	InheritedSensitive bool
+	DotenvFiles        []string
+	Top                map[string]config.Value
+	Profile            map[string]config.Value
+	Service            map[string]config.Value
+	Project            string
+	Branch             string
+	Scope              string
+	Ports              map[string]int
+	DeferredPorts      map[string]struct{}
+	DeferRuntime       bool
+	Routes             plan.Routes
+	ServiceName        string
 }
 
 func Resolve(input Input) (Values, error) {
@@ -101,7 +102,7 @@ func Resolve(input Input) (Values, error) {
 		if err := validateName(name); err != nil {
 			return Values{}, fmt.Errorf("inherited environment: %w", err)
 		}
-		entries[name] = Entry{Value: value}
+		entries[name] = Entry{Value: value, Sensitive: input.InheritedSensitive}
 	}
 	for _, path := range input.DotenvFiles {
 		values, err := parseDotenv(path)

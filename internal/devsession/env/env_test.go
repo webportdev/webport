@@ -39,6 +39,26 @@ func TestResolveAppliesPrecedenceAndForwardReferences(t *testing.T) {
 	}
 }
 
+func TestResolveMarksInheritedValuesSensitiveWhenRequested(t *testing.T) {
+	values, err := Resolve(Input{
+		Inherited:          map[string]string{"TOKEN": "secret"},
+		InheritedSensitive: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := values.Get("TOKEN")
+	if !ok || !entry.Sensitive {
+		t.Fatalf("TOKEN entry = %+v, want sensitive", entry)
+	}
+	if got := values.Map(false)["TOKEN"]; got != "<redacted>" {
+		t.Fatalf("redacted TOKEN = %q", got)
+	}
+	if got := values.Map(true)["TOKEN"]; got != "secret" {
+		t.Fatalf("sensitive TOKEN = %q", got)
+	}
+}
+
 func TestResolveSupportsAllowedReferencesAndSensitiveTaint(t *testing.T) {
 	literal := func(value string, sensitive bool) config.Value {
 		return config.Value{Literal: stringPtr(value), Sensitive: sensitive}

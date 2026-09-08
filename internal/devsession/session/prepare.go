@@ -209,7 +209,7 @@ func composeEnvironments(cfg config.Config, p plan.Plan, generate bool) (map[str
 		if err != nil {
 			return nil, err
 		}
-		values, err := env.Resolve(env.Input{Inherited: environmentFromProcess(), DotenvFiles: dotenv, Top: top, Profile: profile, Service: service, Project: p.Identity.Project, Branch: p.Identity.Branch, Scope: p.Identity.Scope, Ports: runtime.Ports, DeferredPorts: runtime.DeferredPorts, DeferRuntime: true, Routes: p.Routes, ServiceName: name})
+		values, err := env.Resolve(env.Input{Inherited: environmentFromProcess(), InheritedSensitive: true, DotenvFiles: dotenv, Top: top, Profile: profile, Service: service, Project: p.Identity.Project, Branch: p.Identity.Branch, Scope: p.Identity.Scope, Ports: runtime.Ports, DeferredPorts: runtime.DeferredPorts, DeferRuntime: true, Routes: p.Routes, ServiceName: name})
 		if err != nil {
 			return nil, fmt.Errorf("service %q environment: %w", name, err)
 		}

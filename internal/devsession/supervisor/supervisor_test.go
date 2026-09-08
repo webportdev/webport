@@ -120,9 +120,31 @@ func TestRunActivatesRouteAfterReadinessAndReleasesBeforeReturn(t *testing.T) {
 	}
 }
 
+func TestReleaseRoutesUsesBoundedContext(t *testing.T) {
+	client := &routeClientFake{blockRelease: true}
+	routeManager, err := routes.NewManager(client, time.Second, 100*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := plan.Route{Service: "frontend", Project: "app", Branch: "main", Port: 3000, Available: true}
+	if err := routeManager.Activate(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	err = releaseRoutesAndShutdown(nil, plan.Plan{}, Options{RouteManager: routeManager, RouteReleaseTimeout: 20 * time.Millisecond})
+	if err == nil {
+		t.Fatal("releaseRoutesAndShutdown() error = nil")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("route release took %v", elapsed)
+	}
+}
+
 type routeClientFake struct {
-	registers []daemon.RouteRequest
-	releases  []string
+	registers    []daemon.RouteRequest
+	releases     []string
+	blockRelease bool
 }
 
 func (f *routeClientFake) Config(context.Context) (daemon.Config, error) {
@@ -135,7 +157,11 @@ func (f *routeClientFake) Register(_ context.Context, request daemon.RouteReques
 func (f *routeClientFake) Heartbeat(context.Context, string, time.Duration) (daemon.Lease, error) {
 	return daemon.Lease{}, nil
 }
-func (f *routeClientFake) Release(_ context.Context, lease string) error {
+func (f *routeClientFake) Release(ctx context.Context, lease string) error {
+	if f.blockRelease {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	f.releases = append(f.releases, lease)
 	return nil
 }

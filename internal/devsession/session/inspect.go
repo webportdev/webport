@@ -359,11 +359,13 @@ func CleanSecrets(options Options) error {
 	if err != nil {
 		return err
 	}
-	if _, err := store.ReadLive(); err == nil {
-		return errors.New("cannot clean project secrets while a development session is active")
-	} else if !errors.Is(err, os.ErrNotExist) {
+	if err := store.Acquire(); err != nil {
+		if errors.Is(err, state.ErrLocked) {
+			return errors.New("cannot clean project secrets while a development session is active")
+		}
 		return err
 	}
+	defer func() { _ = store.Release() }()
 	secretStore, err := secrets.NewStore(filepathForSecretStore(id))
 	if err != nil {
 		return err
