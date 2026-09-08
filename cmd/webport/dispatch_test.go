@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunCLIUsesProvidedStreamsForSimpleCommands(t *testing.T) {
@@ -32,5 +36,47 @@ func TestRunCLIReportsUnknownCommandWithoutExiting(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Usage:") {
 		t.Fatalf("unknown command output = %q", out.String())
+	}
+}
+
+func TestWrapperResolutionFormatsDoNotExposeDiscoveryToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/config" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"base_domain":         "dev.example.test",
+			"default_ttl_seconds": 300,
+			"tls_mode":            "local-ca",
+		})
+	}))
+	defer server.Close()
+
+	values := routeFlags{project: "app", branch: "feature/auth", api: server.URL, ttl: 30 * time.Second}
+	resolution, err := resolveWrapperValues(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Host != "app-feature-auth.dev.example.test" || resolution.URL != "https://app-feature-auth.dev.example.test" {
+		t.Fatalf("resolution = %+v", resolution)
+	}
+	var output bytes.Buffer
+	if err := writeWrapperResolution(resolution, "env", &output); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "CLIENT_TOKEN") || !strings.Contains(output.String(), "WEBPORT_ROUTE='app:feature/auth'") {
+		t.Fatalf("env output = %q", output.String())
+	}
+}
+
+func TestWithEnvironmentReplacesExistingValuesAndPreservesOtherArguments(t *testing.T) {
+	got := withEnvironment([]string{"KEEP=one", "WEBPORT_HOST=old", "WEBPORT_CLIENT_TOKEN=old"}, map[string]string{
+		"WEBPORT_HOST":         "new",
+		"WEBPORT_CLIENT_TOKEN": "secret",
+	})
+	joined := strings.Join(got, "\n")
+	if strings.Contains(joined, "WEBPORT_HOST=old") || strings.Contains(joined, "CLIENT_TOKEN=old") || !strings.Contains(joined, "KEEP=one") || !strings.Contains(joined, "WEBPORT_HOST=new") {
+		t.Fatalf("environment = %v", got)
 	}
 }

@@ -16,7 +16,8 @@ resume without reconstructing completed work from the repository diff.
 | 3 | complete | Added strict, side-effect-free YAML loading under `internal/devsession/config`: upward/worktree-bounded discovery, explicit config selection, primary/local tree merge, duplicate/unknown-key/type/duration/version diagnostics, and typed unresolved configuration. Focused tests pass. |
 | 4 | complete | Added immutable identity resolution under `internal/devsession/identity`: Git/override identity, canonical worktree handling, stable collision-resistant scope, opaque launch ID, and config-directory-relative path resolution. Focused tests pass. |
 | 5 | complete | Added route pre-resolution in `internal/devsession/plan`: daemon `/config` model, checked hostname generation, raw identity/hostname collision checks, optional-route degradation, export alias/recipient validation, and deterministic JSON/env renderings. Focused tests pass. |
-| 6–22 | pending | Not started. |
+| 6 | complete | Upgraded the zero-config wrapper with pre-launch `WEBPORT_PROJECT`, `WEBPORT_BRANCH`, `WEBPORT_ROUTE`, `WEBPORT_HOST`, and `WEBPORT_URL`, deterministic `--format json|env` resolution, inherited-value replacement, and regression coverage without exposing discovery tokens. |
+| 7–22 | pending | Not started. |
 
 ## Target outcome
 

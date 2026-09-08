@@ -18,13 +18,16 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 
 	gitdetect "github.com/webportdev/webport/cmd/webportctl/git"
 	client "github.com/webportdev/webport/cmd/webportctl/runtime"
+	"github.com/webportdev/webport/internal/devsession/daemon"
 	"github.com/webportdev/webport/internal/discovery"
+	"github.com/webportdev/webport/internal/route"
 )
 
 const defaultAPI = "http://127.0.0.1:8080"
@@ -138,22 +141,49 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 			break
 		}
 	}
-	if separator < 0 || separator == len(args)-1 {
-		return errors.New("usage: webport dev [options] -- COMMAND [ARG...]")
-	}
 	flags := flag.NewFlagSet("webport dev", flag.ContinueOnError)
+	flags.SetOutput(errOut)
 	var values routeFlags
 	var startupTimeout time.Duration
+	var format string
 	addRouteFlags(flags, &values)
 	flags.DurationVar(&startupTimeout, "startup-timeout", 30*time.Second, "time to wait for an HTTP listener")
-	if err := flags.Parse(args[:separator]); err != nil {
+	flags.StringVar(&format, "format", "", "resolution output format: json or env")
+	flagArgs := args
+	if separator >= 0 {
+		flagArgs = args[:separator]
+	}
+	if err := flags.Parse(flagArgs); err != nil {
 		return err
+	}
+	if format != "" && format != "json" && format != "env" {
+		return errors.New("--format must be json or env")
+	}
+	if separator < 0 {
+		if format == "" {
+			return errors.New("usage: webport dev [options] -- COMMAND [ARG...]")
+		}
+		if err := values.inferIdentity(); err != nil {
+			return err
+		}
+		resolution, err := resolveWrapperValues(values)
+		if err != nil {
+			return err
+		}
+		return writeWrapperResolution(resolution, format, out)
+	}
+	if separator == len(args)-1 {
+		return errors.New("usage: webport dev [options] -- COMMAND [ARG...]")
 	}
 	if err := values.inferIdentity(); err != nil {
 		return err
 	}
 	if err := requireReady(values.api); err != nil {
 		return fmt.Errorf("%w; run \"webport doctor\"", err)
+	}
+	resolution, err := resolveWrapperValues(values)
+	if err != nil {
+		return err
 	}
 
 	token, err := randomToken()
@@ -163,12 +193,16 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	commandArgs := args[separator+1:]
 	command := exec.Command(commandArgs[0], commandArgs[1:]...)
 	command.Stdin, command.Stdout, command.Stderr = in, out, errOut
-	command.Env = append(os.Environ(),
-		"WEBPORT_ROUTE="+values.project+":"+values.branch,
-		"WEBPORT_CLIENT_TOKEN="+token,
-	)
+	command.Env = withEnvironment(os.Environ(), map[string]string{
+		"WEBPORT_PROJECT":      resolution.Project,
+		"WEBPORT_BRANCH":       resolution.Branch,
+		"WEBPORT_ROUTE":        values.project + ":" + values.branch,
+		"WEBPORT_HOST":         resolution.Host,
+		"WEBPORT_URL":          resolution.URL,
+		"WEBPORT_CLIENT_TOKEN": token,
+	})
 	if values.port > 0 {
-		command.Env = append(command.Env, fmt.Sprintf("WEBPORT_APP_PORT=%d", values.port))
+		command.Env = withEnvironment(command.Env, map[string]string{"WEBPORT_APP_PORT": fmt.Sprint(values.port)})
 	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
@@ -245,6 +279,102 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 		return commandErr
 	}
 	return releaseErr
+}
+
+type wrapperResolution struct {
+	SchemaVersion int    `json:"schema_version"`
+	Project       string `json:"project"`
+	Branch        string `json:"branch"`
+	Route         string `json:"route"`
+	Host          string `json:"host"`
+	URL           string `json:"url"`
+	Port          int    `json:"port,omitempty"`
+}
+
+func resolveWrapperValues(values routeFlags) (wrapperResolution, error) {
+	httpClient, err := daemon.NewHTTPClient(values.api, nil, nil)
+	if err != nil {
+		return wrapperResolution{}, err
+	}
+	serverConfig, err := httpClient.Config(context.Background())
+	if err != nil {
+		return wrapperResolution{}, err
+	}
+	host, err := route.BuildDomainChecked(serverConfig.BaseDomain, values.project, values.branch)
+	if err != nil {
+		return wrapperResolution{}, fmt.Errorf("resolve route hostname: %w", err)
+	}
+	return wrapperResolution{
+		SchemaVersion: 1,
+		Project:       values.project,
+		Branch:        values.branch,
+		Route:         values.project + ":" + values.branch,
+		Host:          host,
+		URL:           "https://" + host,
+		Port:          values.port,
+	}, nil
+}
+
+func writeWrapperResolution(resolution wrapperResolution, format string, out io.Writer) error {
+	switch format {
+	case "json":
+		encoded, err := json.MarshalIndent(resolution, "", "  ")
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(out, string(encoded))
+		return err
+	case "env":
+		values := map[string]string{
+			"WEBPORT_PROJECT": resolution.Project,
+			"WEBPORT_BRANCH":  resolution.Branch,
+			"WEBPORT_ROUTE":   resolution.Route,
+			"WEBPORT_HOST":    resolution.Host,
+			"WEBPORT_URL":     resolution.URL,
+		}
+		if resolution.Port > 0 {
+			values["WEBPORT_APP_PORT"] = fmt.Sprint(resolution.Port)
+		}
+		keys := make([]string, 0, len(values))
+		for key := range values {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if _, err := fmt.Fprintf(out, "%s=%s\n", key, shellQuote(values[key])); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func withEnvironment(base []string, values map[string]string) []string {
+	result := make([]string, 0, len(base)+len(values))
+	for _, item := range base {
+		name, _, found := strings.Cut(item, "=")
+		if found {
+			if _, replace := values[name]; replace {
+				continue
+			}
+		}
+		result = append(result, item)
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		result = append(result, key+"="+values[key])
+	}
+	return result
 }
 
 func newClientManager(values routeFlags) (*client.Manager, error) {
