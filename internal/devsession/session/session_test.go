@@ -73,3 +73,32 @@ services:
 		t.Fatalf("output = %q", output.String())
 	}
 }
+
+func TestRunUsesConcurrentSchedulerForMultipleServices(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".webport.yaml")
+	content := `version: 1
+project: sample
+branch: main
+worktree_root: .
+profiles:
+  default: {services: [api, worker]}
+services:
+  api:
+    command: [sh, -c, "sleep .05"]
+    completion: exit
+  worker:
+    command: [sh, -c, "sleep .05"]
+    completion: exit
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := Run(context.Background(), Options{ConfigPath: configPath, Out: &output, ErrOut: &output}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "api") || !strings.Contains(output.String(), "worker") {
+		t.Fatalf("output = %q", output.String())
+	}
+}

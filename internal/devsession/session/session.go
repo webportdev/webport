@@ -22,6 +22,7 @@ import (
 	"github.com/webportdev/webport/internal/devsession/ports"
 	"github.com/webportdev/webport/internal/devsession/readiness"
 	"github.com/webportdev/webport/internal/devsession/secrets"
+	"github.com/webportdev/webport/internal/devsession/supervisor"
 )
 
 type Options struct {
@@ -126,27 +127,43 @@ func Run(ctx context.Context, options Options) error {
 	if err != nil {
 		return err
 	}
-	if len(resolvedPlan.Order) != 1 {
-		return fmt.Errorf("configured phase-1 session requires one selected service; plan contains %d services", len(resolvedPlan.Order))
+	environments := make(map[string]env.Values, len(resolvedPlan.Order))
+	for _, name := range resolvedPlan.Order {
+		service := resolvedPlan.Services[name]
+		values, resolveErr := env.Resolve(env.Input{
+			Inherited: inherited, DotenvFiles: dotenvFiles, Top: generated,
+			Profile: profileEnv, Service: service.Env, Project: id.Project,
+			Branch: id.Branch, Scope: id.Scope, Ports: portValues, Routes: routes,
+			ServiceName: name,
+		})
+		if resolveErr != nil {
+			return resolveErr
+		}
+		environments[name] = values
+	}
+	fmt.Fprint(options.Out, resolvedPlan.Human())
+	runtime := env.Runtime{Project: id.Project, Branch: id.Branch, Scope: id.Scope, Ports: portValues, Routes: routes}
+	if len(resolvedPlan.Order) > 1 {
+		result, runErr := supervisor.Run(ctx, resolvedPlan, supervisor.Options{
+			Environments: environments, Runtime: runtime, Out: options.Out, ErrOut: options.ErrOut,
+		})
+		if runErr != nil {
+			return runErr
+		}
+		for _, state := range result.States {
+			if state == supervisor.StateFailed {
+				return errors.New("development session service failed")
+			}
+		}
+		return nil
 	}
 	serviceName := resolvedPlan.Order[0]
 	service := resolvedPlan.Services[serviceName]
-	values, err := env.Resolve(env.Input{
-		Inherited: inherited, DotenvFiles: dotenvFiles, Top: generated,
-		Profile: profileEnv, Service: service.Env, Project: id.Project,
-		Branch: id.Branch, Scope: id.Scope, Ports: portValues, Routes: routes,
-		ServiceName: serviceName,
-	})
-	if err != nil {
-		return err
-	}
-	runtime := env.Runtime{Project: id.Project, Branch: id.Branch, Scope: id.Scope, Ports: portValues, Routes: routes}
+	values := environments[serviceName]
 	commandValues, shellValue, err := expandCommand(service, values, runtime)
 	if err != nil {
 		return fmt.Errorf("service %q command: %w", serviceName, err)
 	}
-
-	fmt.Fprint(options.Out, resolvedPlan.Human())
 	sink, closeLogs, err := newOutputSink(serviceName, service.Logs, id, options.Out)
 	if err != nil {
 		return err
