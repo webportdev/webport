@@ -73,6 +73,19 @@ func TestResolveRandomRetryExhaustionAndDiscover(t *testing.T) {
 	}
 }
 
+func TestReallocateReplansDynamicPortAfterStartupRace(t *testing.T) {
+	first := 4200
+	prober := &fakeProber{blocked: map[int]bool{4200: true}}
+	current := map[string]Allocation{"api": {Name: "api", Owner: "api", Port: first}}
+	updated, err := Reallocate(context.Background(), map[string]config.Port{"api": {FirstFree: &first}}, current, []string{"api"}, Options{PortProber: prober})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated["api"].Port != 4201 {
+		t.Fatalf("replanned allocation = %+v", updated["api"])
+	}
+}
+
 func TestValidatePreStartReferencesRejectsDiscoveredPort(t *testing.T) {
 	specs := map[string]config.Port{"runtime": {Discover: true}}
 	if err := ValidatePreStartReferences(specs, map[string]string{"route.frontend": "runtime"}); err == nil || !strings.Contains(err.Error(), "before its owner") {

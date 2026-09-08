@@ -21,7 +21,7 @@ Configured-session runtime state is also intentionally ephemeral: a per-user
 worktree lock, live state file, and local control socket exist only while the
 foreground session runs. A redacted last-session record may remain for
 inspection. Project-lifetime generated secrets are kept separately in the
-configuration worktree with mode `0600`; they are not copied into session
+per-user runtime state directory with mode `0600`; they are not copied into session
 state, logs, exports after shutdown, or summaries.
 
 ## Route transaction

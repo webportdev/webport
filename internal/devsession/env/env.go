@@ -35,6 +35,32 @@ func (v Values) With(values map[string]string) Values {
 	return Values{entries: entries}
 }
 
+// Merge returns a union while preserving the receiver's entries on conflict.
+func (v Values) Merge(other Values) Values {
+	entries := make(map[string]Entry, len(v.entries)+len(other.entries))
+	for name, entry := range other.entries {
+		entries[name] = entry
+	}
+	for name, entry := range v.entries {
+		entries[name] = entry
+	}
+	return Values{entries: entries}
+}
+
+// ExpandRuntimeValues resolves deferred runtime references when a service is
+// about to start.
+func (v Values) ExpandRuntimeValues(runtime Runtime) (Values, error) {
+	entries := make(map[string]Entry, len(v.entries))
+	for name, entry := range v.entries {
+		value, err := v.ExpandRuntime(entry.Value, runtime)
+		if err != nil {
+			return Values{}, fmt.Errorf("environment %s: %w", name, err)
+		}
+		entries[name] = Entry{Value: value, Sensitive: entry.Sensitive}
+	}
+	return Values{entries: entries}, nil
+}
+
 func (v Values) ConfigValues() map[string]config.Value {
 	result := make(map[string]config.Value, len(v.entries))
 	for name, entry := range v.entries {
@@ -45,25 +71,28 @@ func (v Values) ConfigValues() map[string]config.Value {
 }
 
 type Runtime struct {
-	Project string
-	Branch  string
-	Scope   string
-	Ports   map[string]int
-	Routes  plan.Routes
+	Project       string
+	Branch        string
+	Scope         string
+	Ports         map[string]int
+	DeferredPorts map[string]struct{}
+	Routes        plan.Routes
 }
 
 type Input struct {
-	Inherited   map[string]string
-	DotenvFiles []string
-	Top         map[string]config.Value
-	Profile     map[string]config.Value
-	Service     map[string]config.Value
-	Project     string
-	Branch      string
-	Scope       string
-	Ports       map[string]int
-	Routes      plan.Routes
-	ServiceName string
+	Inherited     map[string]string
+	DotenvFiles   []string
+	Top           map[string]config.Value
+	Profile       map[string]config.Value
+	Service       map[string]config.Value
+	Project       string
+	Branch        string
+	Scope         string
+	Ports         map[string]int
+	DeferredPorts map[string]struct{}
+	DeferRuntime  bool
+	Routes        plan.Routes
+	ServiceName   string
 }
 
 func Resolve(input Input) (Values, error) {
@@ -124,7 +153,7 @@ func Resolve(input Input) (Values, error) {
 
 	resolver := resolver{
 		entries: entries, project: input.Project, branch: input.Branch,
-		scope: input.Scope, ports: input.Ports, routes: input.Routes,
+		scope: input.Scope, ports: input.Ports, deferredPorts: input.DeferredPorts, deferRuntime: input.DeferRuntime, routes: input.Routes,
 		resolved: make(map[string]Entry), resolving: make(map[string]bool), stack: nil,
 	}
 	for name := range entries {
@@ -228,6 +257,9 @@ func (v Values) runtimeReference(reference string, runtime Runtime) (string, boo
 		name := strings.TrimPrefix(reference, "ports.")
 		port, ok := runtime.Ports[name]
 		if !ok {
+			if _, deferred := runtime.DeferredPorts[name]; deferred {
+				return "${" + reference + "}", false, nil
+			}
 			return "", false, fmt.Errorf("unknown port %q", name)
 		}
 		return strconv.Itoa(port), false, nil
@@ -278,15 +310,17 @@ func (v Values) expand(value string, rejectSensitive bool) (string, error) {
 }
 
 type resolver struct {
-	entries   map[string]Entry
-	resolved  map[string]Entry
-	resolving map[string]bool
-	stack     []string
-	project   string
-	branch    string
-	scope     string
-	ports     map[string]int
-	routes    plan.Routes
+	entries       map[string]Entry
+	resolved      map[string]Entry
+	resolving     map[string]bool
+	stack         []string
+	project       string
+	branch        string
+	scope         string
+	ports         map[string]int
+	deferredPorts map[string]struct{}
+	deferRuntime  bool
+	routes        plan.Routes
 }
 
 func (r *resolver) resolveEnv(name string) (Entry, error) {
@@ -332,6 +366,9 @@ func (r *resolver) resolveText(value string) (string, bool, error) {
 }
 
 func (r *resolver) resolveReference(reference string) (string, bool, error) {
+	if r.deferRuntime && (reference == "project" || reference == "branch" || reference == "session.scope" || strings.HasPrefix(reference, "ports.") || strings.HasPrefix(reference, "routes.")) {
+		return "${" + reference + "}", false, nil
+	}
 	switch {
 	case reference == "project":
 		return r.project, false, nil
@@ -343,6 +380,9 @@ func (r *resolver) resolveReference(reference string) (string, bool, error) {
 		name := strings.TrimPrefix(reference, "ports.")
 		port, ok := r.ports[name]
 		if !ok {
+			if _, deferred := r.deferredPorts[name]; deferred {
+				return "${" + reference + "}", false, nil
+			}
 			return "", false, fmt.Errorf("unknown port %q", name)
 		}
 		return strconv.Itoa(port), false, nil

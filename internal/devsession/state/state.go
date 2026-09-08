@@ -29,6 +29,7 @@ type Store struct {
 	LivePath     string
 	LastPath     string
 	LockPath     string
+	SecretPath   string
 	lock         *fileLock
 	mu           sync.Mutex
 }
@@ -109,7 +110,14 @@ func NewStore(worktreeRoot, directory string) (Store, error) {
 	}
 	digest := sha256.Sum256([]byte(root))
 	prefix := filepath.Join(directory, fmt.Sprintf("%x", digest[:16]))
-	return Store{WorktreeRoot: root, Directory: directory, LivePath: prefix + ".live.json", LastPath: prefix + ".last.json", LockPath: prefix + ".lock"}, nil
+	return Store{
+		WorktreeRoot: root,
+		Directory:    directory,
+		LivePath:     prefix + ".live.json",
+		LastPath:     prefix + ".last.json",
+		LockPath:     prefix + ".lock",
+		SecretPath:   prefix + ".secrets.json",
+	}, nil
 }
 
 func (s *Store) Acquire() error {

@@ -15,6 +15,9 @@ func TestStoreLocksWorktreeAndRetainsLastSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if filepath.Dir(first.SecretPath) != dir || filepath.Dir(first.SecretPath) == first.WorktreeRoot || filepath.Ext(first.SecretPath) != ".json" {
+		t.Fatalf("secret path is not per-user runtime state: %s", first.SecretPath)
+	}
 	second, err := NewStore(first.WorktreeRoot, dir)
 	if err != nil {
 		t.Fatal(err)

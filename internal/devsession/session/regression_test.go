@@ -47,10 +47,29 @@ func TestInspectValidatesRuntimeInputsWithoutStartingOrGenerating(t *testing.T) 
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("InspectConfig error = %v, want %s", err, test.want)
 			}
-			if _, err := os.Stat(filepath.Join(filepath.Dir(options.ConfigPath), ".webport", "secrets.json")); !os.IsNotExist(err) {
+			store, storeErr := state.NewStore(filepath.Dir(options.ConfigPath), "")
+			if storeErr != nil {
+				t.Fatal(storeErr)
+			}
+			if _, err := os.Stat(store.SecretPath); !os.IsNotExist(err) {
 				t.Fatalf("inspection created secret state: %v", err)
 			}
 		})
+	}
+}
+
+func TestInspectEnvironmentIncludesEverySelectedService(t *testing.T) {
+	options := sessionFixture(t, `profiles: {default: {services: [frontend, backend]}}
+services:
+  frontend: {command: ['true'], env: {FRONTEND_ONLY: frontend}}
+  backend: {command: ['true'], env: {BACKEND_ONLY: backend}}
+`)
+	plan, err := InspectConfig(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Environment["FRONTEND_ONLY"].Literal == nil || plan.Environment["BACKEND_ONLY"].Literal == nil {
+		t.Fatalf("session environment omitted a service: %+v", plan.Environment)
 	}
 }
 

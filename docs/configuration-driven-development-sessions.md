@@ -115,8 +115,9 @@ profiles:
 is allowed only for a non-Git checkout or an explicitly documented monorepo
 boundary. Project and branch values use the same validation rules as route
 identities. Relative paths are resolved against the primary configuration
-directory, including `working_dir`, dotenv files, logs, exports, and the
-project-secret file.
+directory, including `working_dir`, dotenv files, logs, and exports. Project
+secrets use the per-user runtime state directory keyed by the canonical
+worktree.
 
 The resolved identity contains the project, branch, repository/worktree roots,
 a stable `session.scope`, and a fresh opaque launch `session.id`. The scope is
@@ -169,10 +170,12 @@ Generation uses `crypto/rand`.
 
 Each port entry contains exactly one of `fixed`, `first_free`, `random`, or
 `discover`. `fixed` and `first_free` are integers; `random` is an inclusive
-two-integer range; `discover: true` is phase-2 runtime ownership and cannot be
-referenced by pre-start routes or earlier dependencies. Resolved ports are
-unique and checked on loopback before startup. A bounded replan may handle a
-race before the owner becomes ready.
+two-integer range. Resolved ports are unique and checked on loopback before
+startup. Dynamic ports are rechecked immediately before their owning service
+starts; a first-free or random port is replanned if it lost a race. A
+discovered port is selected from the owning process's loopback listener after
+launch and becomes available to dependent services, readiness checks,
+endpoints, and routes.
 
 Each service contains exactly one of `command` (an argument array) or `shell`
 (an explicit platform shell string). `completion: process` is the default and
@@ -273,10 +276,12 @@ Filenames are keyed by a digest of the canonical worktree root. The live file
 is removed after orderly shutdown, while the redacted last-session record is
 replaced according to `session.retain_last_summary`.
 
-Logs, exports, and project secrets are relative to the primary configuration
-directory unless an absolute path is explicitly configured. Logs and exports
-are mode `0600`; log files may remain after shutdown, exports are removed, and
-project secrets remain only until `webport dev clean --secrets`. Webport does
+Logs and exports are relative to the primary configuration directory unless an
+absolute path is explicitly configured. Project-lifetime secrets are stored in
+the per-user runtime directory beside the hashed worktree state, never under
+the checkout. Logs and exports are mode `0600`; log files may remain after
+shutdown, exports are removed, and project secrets remain only until
+`webport dev clean --secrets`. Webport does
 not provide detached sessions, infer state from Docker/Podman/Compose, capture
 arbitrary runtime-assigned ports, perform continuous health checks, scrub
 arbitrary child output for secrets, or clean up after SIGKILL or power loss.

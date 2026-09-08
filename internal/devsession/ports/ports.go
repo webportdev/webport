@@ -101,6 +101,88 @@ func Resolve(ctx context.Context, specs map[string]config.Port, owners map[strin
 	return result, nil
 }
 
+// Reallocate rechecks the selected names immediately before their owning
+// services start. Dynamic allocations keep their port when it is still free;
+// if another process won the race, a new first-free or random port is chosen.
+// Fixed allocations fail with the original availability error.
+func Reallocate(ctx context.Context, specs map[string]config.Port, current map[string]Allocation, names []string, options Options) (map[string]Allocation, error) {
+	if options.Host == "" {
+		options.Host = "127.0.0.1"
+	}
+	if options.MaxAttempts <= 0 {
+		options.MaxAttempts = defaultAttempts
+	}
+	if options.PortProber == nil {
+		options.PortProber = TCPProber{}
+	}
+	if options.RandomSource == nil {
+		options.RandomSource = rand.Reader
+	}
+	result := make(map[string]Allocation, len(current))
+	for name, allocation := range current {
+		result[name] = allocation
+	}
+	selected := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		selected[name] = struct{}{}
+	}
+	reserved := make(map[int]string)
+	for name, allocation := range result {
+		if _, changing := selected[name]; changing {
+			continue
+		}
+		if allocation.Port > 0 {
+			reserved[allocation.Port] = name
+		}
+	}
+	ordered := append([]string(nil), names...)
+	sort.Strings(ordered)
+	for _, name := range ordered {
+		spec, ok := specs[name]
+		if !ok {
+			return nil, fmt.Errorf("port %q is not configured", name)
+		}
+		mode, err := modeOf(spec)
+		if err != nil {
+			return nil, fmt.Errorf("port %q: %w", name, err)
+		}
+		allocation := result[name]
+		allocation.Name = name
+		if mode == "discover" {
+			allocation.Discovered = true
+			allocation.Port = 0
+			result[name] = allocation
+			continue
+		}
+		if allocation.Port > 0 {
+			if _, taken := reserved[allocation.Port]; !taken && probe(ctx, options.PortProber, options.Host, allocation.Port) == nil {
+				reserved[allocation.Port] = name
+				result[name] = allocation
+				continue
+			}
+		}
+		var port int
+		switch mode {
+		case "fixed":
+			port = *spec.Fixed
+			if err := probe(ctx, options.PortProber, options.Host, port); err != nil {
+				return nil, fmt.Errorf("port %q: fixed port %d is unavailable: %w", name, port, err)
+			}
+		case "first_free":
+			port, err = firstFree(ctx, options.PortProber, options.Host, *spec.FirstFree, reserved)
+		case "random":
+			port, err = randomFree(ctx, options.PortProber, options.Host, spec.Random[0], spec.Random[1], reserved, options.RandomSource, options.MaxAttempts)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("port %q: %w", name, err)
+		}
+		allocation.Port, allocation.Discovered = port, false
+		reserved[port] = name
+		result[name] = allocation
+	}
+	return result, nil
+}
+
 func ValidatePreStartReferences(specs map[string]config.Port, references map[string]string) error {
 	for reference, portName := range references {
 		spec, ok := specs[portName]

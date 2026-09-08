@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 
@@ -33,11 +34,13 @@ const (
 )
 
 type Event struct {
-	Service string
-	State   State
-	Error   error
-	At      time.Time
-	Process command.Result
+	Service   string
+	State     State
+	Error     error
+	At        time.Time
+	Process   command.Result
+	Ports     map[string]int
+	Endpoints map[string]string
 }
 
 type Result struct {
@@ -47,16 +50,28 @@ type Result struct {
 }
 
 type Options struct {
-	Environments map[string]env.Values
-	Runtime      env.Runtime
-	Out          io.Writer
-	ErrOut       io.Writer
-	SinkFactory  func(string) command.OutputSink
-	Runner       command.Runner
-	RouteManager *routes.Manager
-	RoutePlans   []plan.Route
-	OnEvent      func(Event)
-	StopSignal   func() os.Signal
+	Environments  map[string]env.Values
+	Runtime       env.Runtime
+	Out           io.Writer
+	ErrOut        io.Writer
+	SinkFactory   func(string) command.OutputSink
+	Runner        command.Runner
+	RouteManager  *routes.Manager
+	RoutePlans    []plan.Route
+	OnEvent       func(Event)
+	StopSignal    func() os.Signal
+	BeforeStart   func(context.Context, string) (StartPlan, error)
+	Discover      func(context.Context, string, int, []string) (map[string]int, error)
+	PortMu        *sync.RWMutex
+	EnvironmentMu *sync.RWMutex
+}
+
+type StartPlan struct {
+	Service       plan.Service
+	Values        env.Values
+	Runtime       env.Runtime
+	RoutePlans    []plan.Route
+	DiscoverPorts []string
 }
 
 type event struct {
@@ -246,6 +261,8 @@ func runService(ctx context.Context, name string, service plan.Service, options 
 		}
 	}
 	send := emit
+	var readyEndpoints map[string]string
+	var startPorts map[string]int
 	emit = func(name string, state State, err error) {
 		if process != nil && (state == StateStopped || state == StateFailed || state == StateSuccess) {
 			_ = process.Terminate(stopSignal(), shutdownGrace(service))
@@ -258,12 +275,48 @@ func runService(ctx context.Context, name string, service plan.Service, options 
 			if process != nil {
 				update.Process = process.Snapshot()
 			}
+			update.Ports = copyPorts(startPorts)
+			update.Endpoints = copyStrings(readyEndpoints)
 			options.OnEvent(update)
 		}
 		send(name, state, err)
 	}
-	values := options.Environments[name]
-	commandValues, shellValue, err := expandCommand(service, values, options.Runtime)
+	start := StartPlan{Service: service, Runtime: snapshotRuntime(options.Runtime, options.PortMu), RoutePlans: copyRoutePlans(options.RoutePlans)}
+	if options.EnvironmentMu != nil {
+		options.EnvironmentMu.RLock()
+		start.Values = options.Environments[name]
+		options.EnvironmentMu.RUnlock()
+	} else {
+		start.Values = options.Environments[name]
+	}
+	if options.BeforeStart != nil {
+		planned, planErr := options.BeforeStart(ctx, name)
+		if planErr != nil {
+			emit(name, StateFailed, planErr)
+			return
+		}
+		if planned.Service.Name != "" {
+			start.Service = planned.Service
+		}
+		if planned.Values.Map(true) != nil {
+			start.Values = planned.Values
+		}
+		if planned.Runtime.Project != "" {
+			start.Runtime = planned.Runtime
+		}
+		if planned.RoutePlans != nil {
+			start.RoutePlans = planned.RoutePlans
+		}
+		start.DiscoverPorts = append([]string(nil), planned.DiscoverPorts...)
+	}
+	service, values, runtime := start.Service, start.Values, start.Runtime
+	var err error
+	values, err = values.ExpandRuntimeValues(runtime)
+	if err != nil {
+		emit(name, StateFailed, err)
+		return
+	}
+	commandValues, shellValue, err := expandCommand(service, values, runtime)
 	if err != nil {
 		emit(name, StateFailed, err)
 		return
@@ -286,7 +339,74 @@ func runService(ctx context.Context, name string, service plan.Service, options 
 		return
 	}
 	if options.OnEvent != nil {
-		options.OnEvent(Event{Service: name, State: StateStarting, At: time.Now(), Process: process.Snapshot()})
+		startPorts = runtimePorts(runtime)
+		options.OnEvent(Event{Service: name, State: StateStarting, At: time.Now(), Process: process.Snapshot(), Ports: copyPorts(startPorts)})
+	}
+	if options.Discover != nil && len(start.DiscoverPorts) > 0 {
+		discovered, discoverErr := options.Discover(ctx, name, process.Snapshot().PID, start.DiscoverPorts)
+		if discoverErr != nil {
+			_ = process.Terminate(stopSignal(), shutdownGrace(service))
+			emit(name, StateFailed, fmt.Errorf("discover listener: %w", discoverErr))
+			return
+		}
+		if len(discovered) != len(start.DiscoverPorts) {
+			_ = process.Terminate(stopSignal(), shutdownGrace(service))
+			emit(name, StateFailed, errors.New("listener discovery returned an incomplete port allocation"))
+			return
+		}
+		if options.PortMu != nil {
+			options.PortMu.Lock()
+			for portName, port := range discovered {
+				runtime.Ports[portName] = port
+				delete(runtime.DeferredPorts, portName)
+				options.Runtime.Ports[portName] = port
+				delete(options.Runtime.DeferredPorts, portName)
+			}
+			options.PortMu.Unlock()
+		} else {
+			for portName, port := range discovered {
+				runtime.Ports[portName] = port
+				delete(runtime.DeferredPorts, portName)
+				options.Runtime.Ports[portName] = port
+				delete(options.Runtime.DeferredPorts, portName)
+			}
+		}
+		if len(discovered) == 1 {
+			for _, port := range discovered {
+				values = values.With(map[string]string{"WEBPORT_APP_PORT": fmt.Sprint(port)})
+			}
+		}
+		if options.EnvironmentMu != nil {
+			options.EnvironmentMu.Lock()
+			options.Environments[name] = values
+			options.EnvironmentMu.Unlock()
+		} else {
+			options.Environments[name] = values
+		}
+		for portName, port := range discovered {
+			for index := range start.RoutePlans {
+				if start.RoutePlans[index].PortName == portName {
+					start.RoutePlans[index].Port = port
+				}
+			}
+		}
+		startPorts = runtimePorts(runtime)
+	}
+	values, err = values.ExpandRuntimeValues(runtime)
+	if err != nil {
+		_ = process.Terminate(stopSignal(), shutdownGrace(service))
+		emit(name, StateFailed, err)
+		return
+	}
+	readyEndpoints = make(map[string]string, len(service.Endpoints))
+	for label, endpoint := range service.Endpoints {
+		resolved, endpointErr := values.ExpandRuntime(endpoint, runtime)
+		if endpointErr != nil {
+			_ = process.Terminate(stopSignal(), shutdownGrace(service))
+			emit(name, StateFailed, fmt.Errorf("endpoint %s: %w", label, endpointErr))
+			return
+		}
+		readyEndpoints[label] = resolved
 	}
 	if service.Completion == "exit" {
 		processErr := process.Wait()
@@ -302,7 +422,7 @@ func runService(ctx context.Context, name string, service plan.Service, options 
 			return
 		}
 		check, readyErr := readiness.Check(ctx, service.Ready, readiness.Options{
-			Expand:     func(value string) (string, error) { return values.ExpandRuntime(value, options.Runtime) },
+			Expand:     func(value string) (string, error) { return values.ExpandRuntime(value, runtime) },
 			WorkingDir: service.WorkingDir, Environment: environmentList(values), CommandRunner: options.Runner,
 		})
 		if readyErr != nil {
@@ -313,7 +433,7 @@ func runService(ctx context.Context, name string, service plan.Service, options 
 			emit(name, StateFailed, fmt.Errorf("readiness failed after %d attempts (%s): %w", check.Attempts, check.LastProbe, readyErr))
 			return
 		}
-		if err := activateRoute(ctx, name, options); err != nil {
+		if err := activateRoute(ctx, name, options, start.RoutePlans); err != nil {
 			if ctx.Err() != nil {
 				emit(name, StateStopped, nil)
 				return
@@ -335,7 +455,7 @@ func runService(ctx context.Context, name string, service plan.Service, options 
 		}
 	}()
 	check, readyErr := readiness.Check(readyCtx, service.Ready, readiness.Options{
-		Expand:     func(value string) (string, error) { return values.ExpandRuntime(value, options.Runtime) },
+		Expand:     func(value string) (string, error) { return values.ExpandRuntime(value, runtime) },
 		WorkingDir: service.WorkingDir, Environment: environmentList(values), CommandRunner: options.Runner,
 	})
 	if readyErr != nil {
@@ -347,7 +467,7 @@ func runService(ctx context.Context, name string, service plan.Service, options 
 		emit(name, StateFailed, fmt.Errorf("readiness failed after %d attempts (%s): %w", check.Attempts, check.LastProbe, readyErr))
 		return
 	}
-	if err := activateRoute(ctx, name, options); err != nil {
+	if err := activateRoute(ctx, name, options, start.RoutePlans); err != nil {
 		_ = process.Terminate(stopSignal(), shutdownGrace(service))
 		if ctx.Err() != nil {
 			emit(name, StateStopped, nil)
@@ -379,8 +499,22 @@ func runShutdownCommands(registered map[string]struct{}, sessionPlan plan.Plan, 
 		if service.Shutdown == nil || len(service.Shutdown.Command) == 0 {
 			continue
 		}
-		values := options.Environments[name]
-		commandValues, shellValue, err := expandCommand(plan.Service{Command: service.Shutdown.Command, Shell: ""}, values, options.Runtime)
+		var values env.Values
+		if options.EnvironmentMu != nil {
+			options.EnvironmentMu.RLock()
+			values = options.Environments[name]
+			options.EnvironmentMu.RUnlock()
+		} else {
+			values = options.Environments[name]
+		}
+		runtime := snapshotRuntime(options.Runtime, options.PortMu)
+		var err error
+		values, err = values.ExpandRuntimeValues(runtime)
+		if err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("shutdown %s: %w", name, err))
+			continue
+		}
+		commandValues, shellValue, err := expandCommand(plan.Service{Command: service.Shutdown.Command, Shell: ""}, values, runtime)
 		if err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("shutdown %s: %w", name, err))
 			continue
@@ -418,11 +552,11 @@ func releaseRoutesAndShutdown(registered map[string]struct{}, sessionPlan plan.P
 	return errors.Join(combined, runShutdownCommands(registered, sessionPlan, options))
 }
 
-func activateRoute(ctx context.Context, service string, options Options) error {
+func activateRoute(ctx context.Context, service string, options Options, routePlans []plan.Route) error {
 	if options.RouteManager == nil {
 		return nil
 	}
-	for _, item := range options.RoutePlans {
+	for _, item := range routePlans {
 		if item.Service == service && item.Available {
 			if err := options.RouteManager.Activate(ctx, item); err != nil {
 				return fmt.Errorf("activate route for %s: %w", service, err)
@@ -497,4 +631,58 @@ func shutdownGrace(service plan.Service) time.Duration {
 		return service.Shutdown.GracePeriod.Duration()
 	}
 	return 5 * time.Second
+}
+
+func snapshotRuntime(value env.Runtime, mutex *sync.RWMutex) env.Runtime {
+	if mutex != nil {
+		mutex.RLock()
+		defer mutex.RUnlock()
+	}
+	ports := make(map[string]int, len(value.Ports))
+	for name, port := range value.Ports {
+		ports[name] = port
+	}
+	deferred := make(map[string]struct{}, len(value.DeferredPorts))
+	for name := range value.DeferredPorts {
+		deferred[name] = struct{}{}
+	}
+	routes := value.Routes
+	routes.Routes = append([]plan.Route(nil), value.Routes.Routes...)
+	return env.Runtime{Project: value.Project, Branch: value.Branch, Scope: value.Scope, Ports: ports, DeferredPorts: deferred, Routes: routes}
+}
+
+func runtimePorts(runtime env.Runtime) map[string]int {
+	ports := make(map[string]int, len(runtime.Ports))
+	for name, port := range runtime.Ports {
+		if port > 0 {
+			ports[name] = port
+		}
+	}
+	return ports
+}
+
+func copyPorts(input map[string]int) map[string]int {
+	if input == nil {
+		return nil
+	}
+	result := make(map[string]int, len(input))
+	for name, port := range input {
+		result[name] = port
+	}
+	return result
+}
+
+func copyStrings(input map[string]string) map[string]string {
+	if input == nil {
+		return nil
+	}
+	result := make(map[string]string, len(input))
+	for name, value := range input {
+		result[name] = value
+	}
+	return result
+}
+
+func copyRoutePlans(input []plan.Route) []plan.Route {
+	return append([]plan.Route(nil), input...)
 }

@@ -107,8 +107,8 @@ Configured sessions are foreground-owned and do not detach. `--` always
 selects the original wrapper path, so `webport dev -- npm run dev` remains
 valid even when a configuration file is present. Status/config output is
 redacted by default; project-lifetime generated values live only in a
-mode-`0600` worktree secret store and are never written to Webport logs or
-retained session metadata.
+mode-`0600` per-user runtime secret store keyed by the worktree and are never
+written to Webport logs or retained session metadata.
 
 ## Public domains
 

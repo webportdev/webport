@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,9 +21,12 @@ import (
 	"github.com/webportdev/webport/internal/devsession/identity"
 	"github.com/webportdev/webport/internal/devsession/logs"
 	"github.com/webportdev/webport/internal/devsession/plan"
+	"github.com/webportdev/webport/internal/devsession/ports"
+	"github.com/webportdev/webport/internal/devsession/readiness"
 	routeleases "github.com/webportdev/webport/internal/devsession/routes"
 	"github.com/webportdev/webport/internal/devsession/state"
 	"github.com/webportdev/webport/internal/devsession/supervisor"
+	"github.com/webportdev/webport/internal/discovery"
 )
 
 type Options struct {
@@ -88,9 +92,118 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	}
 	inspectionPlan := inspectEnvironments(resolvedPlan, environments)
 	runtime := runtimeFor(resolvedPlan)
+	selectedConfig, err := plan.Select(cfg, plan.BuildOptions{Profile: options.Profile, Service: options.Service})
+	if err != nil {
+		return err
+	}
+	var planMu, portMu, environmentMu sync.RWMutex
+	beforeStart := func(startCtx context.Context, serviceName string) (supervisor.StartPlan, error) {
+		planMu.Lock()
+		defer planMu.Unlock()
+		portMu.Lock()
+		for name, allocation := range resolvedPlan.Ports {
+			if allocation.Discovered {
+				if port := runtime.Ports[name]; port > 0 {
+					allocation.Port = port
+					resolvedPlan.Ports[name] = allocation
+					for index := range resolvedPlan.Routes.Routes {
+						if resolvedPlan.Routes.Routes[index].PortName == name {
+							resolvedPlan.Routes.Routes[index].Port = port
+						}
+					}
+				}
+			}
+		}
+		var names []string
+		for portName, owner := range resolvedPlan.PortOwners {
+			if owner == serviceName && !resolvedPlan.Ports[portName].Discovered {
+				names = append(names, portName)
+			}
+		}
+		updated, err := ports.Reallocate(startCtx, selectedConfig.Ports, resolvedPlan.Ports, names, ports.Options{})
+		if err != nil {
+			portMu.Unlock()
+			return supervisor.StartPlan{}, fmt.Errorf("recheck ports for %s: %w", serviceName, err)
+		}
+		resolvedPlan.Ports = updated
+		for name, allocation := range updated {
+			if allocation.Discovered {
+				delete(runtime.Ports, name)
+				continue
+			}
+			runtime.Ports[name] = allocation.Port
+		}
+		for index := range resolvedPlan.Routes.Routes {
+			if allocation, ok := updated[resolvedPlan.Routes.Routes[index].PortName]; ok && !allocation.Discovered {
+				resolvedPlan.Routes.Routes[index].Port = allocation.Port
+			}
+		}
+		currentRuntime := runtimeFor(resolvedPlan)
+		for name, port := range runtime.Ports {
+			currentRuntime.Ports[name] = port
+		}
+		for name := range currentRuntime.DeferredPorts {
+			if currentRuntime.Ports[name] > 0 {
+				delete(currentRuntime.DeferredPorts, name)
+			}
+		}
+		portMu.Unlock()
+		var values env.Values
+		environmentMu.RLock()
+		values = environments[serviceName]
+		environmentMu.RUnlock()
+		if item, ok := routeForService(resolvedPlan.Routes, serviceName); ok {
+			port := ""
+			if item.Port > 0 {
+				port = fmt.Sprint(item.Port)
+			}
+			values = values.With(map[string]string{"WEBPORT_APP_PORT": port})
+		}
+		environmentMu.Lock()
+		environments[serviceName] = values
+		environmentMu.Unlock()
+		service := resolvedPlan.Services[serviceName]
+		service.Endpoints, err = readiness.ResolveEndpoints(selectedConfig.Services[serviceName].Endpoints, func(value string) (string, error) {
+			return values.ExpandRuntime(value, currentRuntime)
+		})
+		if err != nil {
+			return supervisor.StartPlan{}, fmt.Errorf("service %q endpoints: %w", serviceName, err)
+		}
+		var discoverNames []string
+		for portName, owner := range resolvedPlan.PortOwners {
+			if owner == serviceName && resolvedPlan.Ports[portName].Discovered {
+				discoverNames = append(discoverNames, portName)
+			}
+		}
+		return supervisor.StartPlan{
+			Service: service, Values: values, Runtime: currentRuntime,
+			RoutePlans: append([]plan.Route(nil), resolvedPlan.Routes.Routes...), DiscoverPorts: discoverNames,
+		}, nil
+	}
+	discover := func(discoverCtx context.Context, serviceName string, pid int, names []string) (map[string]int, error) {
+		if len(names) != 1 {
+			return nil, fmt.Errorf("service %q owns %d discovered ports; one listener per service is supported", serviceName, len(names))
+		}
+		ctx, cancel := context.WithTimeout(discoverCtx, 30*time.Second)
+		defer cancel()
+		scanner := discovery.Scanner{IncludeSessionManaged: true, ProbeTimeout: 250 * time.Millisecond}
+		for {
+			port, err := scanner.ScanProcess(ctx, pid)
+			if err == nil {
+				return map[string]int{names[0]: port}, nil
+			}
+			timer := time.NewTimer(50 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, fmt.Errorf("service %q: %w", serviceName, ctx.Err())
+			case <-timer.C:
+			}
+		}
+	}
 	live := state.LiveState{
 		SessionID: id.SessionID, Worktree: id.WorktreeRoot, Profile: resolvedPlan.Profile,
-		StartedAt: time.Now(), Ports: runtime.Ports, Services: make(map[string]state.ServiceState),
+		StartedAt: time.Now(), Ports: copyIntMap(runtime.Ports), Services: make(map[string]state.ServiceState),
 		Routes: make(map[string]state.RouteState), Endpoints: make(map[string]string),
 		PIDs: []state.ProcessIdentity{state.IdentifyProcess(os.Getpid())},
 	}
@@ -108,6 +221,7 @@ func Run(ctx context.Context, options Options) (runErr error) {
 		live.Routes[item.Service] = state.RouteState{State: status, Project: item.Project, Branch: item.Branch, Host: item.Host, URL: item.URL, Optional: item.Optional}
 	}
 	var liveMu sync.Mutex
+	startupPrinted := false
 	controlPath := strings.TrimSuffix(stateStore.LivePath, ".live.json") + ".sock"
 	control, err := state.StartControl(controlPath, func(_ context.Context, request state.Request) state.Response {
 		showSensitive, _ := request.Payload["show_sensitive"].(bool)
@@ -155,14 +269,32 @@ func Run(ctx context.Context, options Options) (runErr error) {
 			_ = json.Unmarshal(encoded, &payload)
 			return state.Response{OK: true, Payload: payload}
 		case "env":
-			return state.Response{OK: true, Payload: map[string]any{"values": environments[resolvedPlan.Roots[0]].Map(showSensitive)}}
+			environmentMu.RLock()
+			values := sessionEnvironment(resolvedPlan, environments)
+			environmentMu.RUnlock()
+			planMu.RLock()
+			currentRuntime := runtimeFor(resolvedPlan)
+			planMu.RUnlock()
+			if resolved, resolveErr := values.ExpandRuntimeValues(currentRuntime); resolveErr == nil {
+				values = resolved
+			}
+			return state.Response{OK: true, Payload: map[string]any{"values": values.Map(showSensitive)}}
 		case "exec-info":
 			name, _ := request.Payload["service"].(string)
 			service, ok := resolvedPlan.Services[name]
 			if !ok {
 				return state.Response{Status: 404, Error: "unknown service"}
 			}
-			return state.Response{OK: true, Payload: map[string]any{"working_dir": service.WorkingDir, "environment": environments[name].Map(true)}}
+			environmentMu.RLock()
+			values := environments[name]
+			environmentMu.RUnlock()
+			planMu.RLock()
+			currentRuntime := runtimeFor(resolvedPlan)
+			planMu.RUnlock()
+			if resolved, resolveErr := values.ExpandRuntimeValues(currentRuntime); resolveErr == nil {
+				values = resolved
+			}
+			return state.Response{OK: true, Payload: map[string]any{"working_dir": service.WorkingDir, "environment": values.Map(true)}}
 		default:
 			return state.Response{Status: 404, Error: "unknown control operation"}
 		}
@@ -209,7 +341,11 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	}
 	defer exportStore.Remove()
 	if len(exportPaths) > 0 {
-		if err := exportStore.Write(exportPaths, environments[resolvedPlan.Roots[0]]); err != nil {
+		exported := sessionEnvironment(resolvedPlan, environments)
+		if resolved, resolveErr := exported.ExpandRuntimeValues(runtimeFor(resolvedPlan)); resolveErr == nil {
+			exported = resolved
+		}
+		if err := exportStore.Write(exportPaths, exported); err != nil {
 			return err
 		}
 	}
@@ -284,12 +420,44 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	}()
 	result, err := supervisor.Run(ctx, resolvedPlan, supervisor.Options{
 		Environments: environments, Runtime: runtime, Out: options.Out, ErrOut: options.ErrOut,
-		RouteManager: routeManager, RoutePlans: resolvedPlan.Routes.Routes,
+		RouteManager: routeManager, RoutePlans: append([]plan.Route(nil), resolvedPlan.Routes.Routes...),
 		StopSignal:  options.StopSignal,
+		BeforeStart: beforeStart, Discover: discover, PortMu: &portMu, EnvironmentMu: &environmentMu,
 		SinkFactory: func(name string) command.OutputSink { return sinks[name] },
 		OnEvent: func(event supervisor.Event) {
 			liveMu.Lock()
 			defer liveMu.Unlock()
+			planMu.Lock()
+			for name, port := range event.Ports {
+				if allocation, ok := resolvedPlan.Ports[name]; ok {
+					allocation.Port = port
+					resolvedPlan.Ports[name] = allocation
+				}
+				live.Ports[name] = port
+				for index := range resolvedPlan.Routes.Routes {
+					if resolvedPlan.Routes.Routes[index].PortName == name {
+						resolvedPlan.Routes.Routes[index].Port = port
+					}
+				}
+			}
+			planMu.Unlock()
+			for label, endpoint := range event.Endpoints {
+				live.Endpoints[event.Service+"."+label] = endpoint
+			}
+			if len(exportPaths) > 0 && len(event.Ports) > 0 {
+				environmentMu.RLock()
+				exported := sessionEnvironment(resolvedPlan, environments)
+				environmentMu.RUnlock()
+				planMu.RLock()
+				currentRuntime := runtimeFor(resolvedPlan)
+				planMu.RUnlock()
+				if resolved, resolveErr := exported.ExpandRuntimeValues(currentRuntime); resolveErr == nil {
+					exported = resolved
+					if exportErr := exportStore.Write(exportPaths, exported); exportErr != nil {
+						live.LastError = exportErr.Error()
+					}
+				}
+			}
 			value := live.Services[event.Service]
 			if event.Process.PID != 0 && value.PID == 0 {
 				identity := state.IdentifyProcess(event.Process.PID)
@@ -314,11 +482,31 @@ func Run(ctx context.Context, options Options) (runErr error) {
 			live.Services[event.Service] = value
 			writeLive()
 			if event.State == supervisor.StateReady {
-				if item, ok := routeForService(resolvedPlan.Routes, event.Service); ok && item.Available {
+				planMu.RLock()
+				item, routeAvailable := routeForService(resolvedPlan.Routes, event.Service)
+				planMu.RUnlock()
+				if routeAvailable && item.Available {
 					fmt.Fprintf(options.Out, "public URL: %s\n", item.URL)
 				}
-				for label, endpoint := range resolvedPlan.Services[event.Service].Endpoints {
+				for label, endpoint := range event.Endpoints {
 					fmt.Fprintf(options.Out, "%s %s: %s\n", event.Service, label, endpoint)
+				}
+				if !startupPrinted {
+					ready := true
+					for _, root := range resolvedPlan.Roots {
+						stateValue := live.Services[root].State
+						if stateValue != string(supervisor.StateReady) && stateValue != string(supervisor.StateSuccess) {
+							ready = false
+							break
+						}
+					}
+					if ready {
+						planMu.RLock()
+						summary := startupSummary(resolvedPlan, live, &stateStore, exportPaths, cfg)
+						planMu.RUnlock()
+						fmt.Fprint(options.Out, summary)
+						startupPrinted = true
+					}
 				}
 			}
 		},
@@ -330,6 +518,12 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	last.CleanupErrors = result.CleanupErrors
 	for name, value := range result.States {
 		last.FinalStates[name] = string(value)
+	}
+	if !startupPrinted {
+		planMu.RLock()
+		summary := startupSummary(resolvedPlan, live, &stateStore, exportPaths, cfg)
+		planMu.RUnlock()
+		fmt.Fprint(options.Out, summary)
 	}
 	return errors.Join(err, stateErr)
 }
@@ -410,5 +604,106 @@ func expandCommand(service plan.Service, values env.Values, runtime env.Runtime)
 }
 
 func filepathForSecretStore(id identity.Identity) string {
-	return id.ConfigDirectory + string(os.PathSeparator) + ".webport" + string(os.PathSeparator) + "secrets.json"
+	store, err := state.NewStore(id.WorktreeRoot, "")
+	if err != nil {
+		return ""
+	}
+	return store.SecretPath
+}
+
+func startupSummary(p plan.Plan, live state.LiveState, store *state.Store, exportPaths map[string]string, cfg config.Config) string {
+	var builder strings.Builder
+	builder.WriteString("development session started\n")
+	fmt.Fprintf(&builder, "profile: %s\n", p.Profile)
+	fmt.Fprintf(&builder, "state: %s\n", store.LivePath)
+	if len(p.Ports) > 0 {
+		builder.WriteString("ports:\n")
+		names := make([]string, 0, len(p.Ports))
+		for name := range p.Ports {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			allocation := p.Ports[name]
+			if allocation.Port > 0 {
+				fmt.Fprintf(&builder, "  %s: %d\n", name, allocation.Port)
+			} else {
+				fmt.Fprintf(&builder, "  %s: discovering\n", name)
+			}
+		}
+	}
+	builder.WriteString("services:\n")
+	for _, name := range p.Order {
+		service := live.Services[name]
+		fmt.Fprintf(&builder, "  %s: %s", name, service.State)
+		if path := live.LogPaths[name]; path != "" {
+			fmt.Fprintf(&builder, " (log: %s)", path)
+		}
+		builder.WriteByte('\n')
+	}
+	for _, item := range p.Routes.Routes {
+		if item.URL != "" {
+			fmt.Fprintf(&builder, "route %s: %s\n", item.Service, item.URL)
+		}
+	}
+	endpointNames := make([]string, 0, len(live.Endpoints))
+	for key := range live.Endpoints {
+		endpointNames = append(endpointNames, key)
+	}
+	sort.Strings(endpointNames)
+	for _, key := range endpointNames {
+		fmt.Fprintf(&builder, "endpoint %s: %s\n", key, live.Endpoints[key])
+	}
+	if len(exportPaths) > 0 {
+		builder.WriteString("exports:\n")
+		keys := make([]string, 0, len(exportPaths))
+		for key := range exportPaths {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			fmt.Fprintf(&builder, "  %s: %s\n", key, exportPaths[key])
+		}
+	}
+	generated := generatedNames(cfg, p.Profile, p.Order)
+	if len(generated) > 0 {
+		fmt.Fprintf(&builder, "generated sensitive settings: %s\n", strings.Join(generated, ", "))
+	}
+	builder.WriteString("use `webport dev status`, `webport dev logs`, or `webport dev env` to inspect the session; press Ctrl+C to stop.\n")
+	return builder.String()
+}
+
+func generatedNames(cfg config.Config, profile string, services []string) []string {
+	seen := make(map[string]struct{})
+	for name, value := range cfg.Env {
+		if value.Generate != nil {
+			seen[name] = struct{}{}
+		}
+	}
+	for name, value := range cfg.Profiles[profile].Env {
+		if value.Generate != nil {
+			seen["profile."+profile+"."+name] = struct{}{}
+		}
+	}
+	for _, serviceName := range services {
+		for name, value := range cfg.Services[serviceName].Env {
+			if value.Generate != nil {
+				seen["service."+serviceName+"."+name] = struct{}{}
+			}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for name := range seen {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func copyIntMap(input map[string]int) map[string]int {
+	result := make(map[string]int, len(input))
+	for name, value := range input {
+		result[name] = value
+	}
+	return result
 }

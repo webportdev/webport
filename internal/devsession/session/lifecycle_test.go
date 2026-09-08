@@ -336,7 +336,11 @@ func waitForFixtureCondition(timeout time.Duration, condition func() bool) error
 
 func assertFixtureArtifacts(t *testing.T, root, config string, output *safeBuffer, api, backendURL string) {
 	t.Helper()
-	secretData, err := os.ReadFile(filepath.Join(root, ".webport", "secrets.json"))
+	stateStore, err := state.NewStore(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretData, err := os.ReadFile(stateStore.SecretPath)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -84,6 +84,7 @@ type BuildOptions struct {
 	Service      string
 	PortSpecs    map[string]config.Port
 	PortValues   map[string]ports.Allocation
+	PortOwners   map[string]string
 	Routes       Routes
 	Lookup       primitives.CommandLookup
 	InheritedEnv map[string]string
@@ -112,6 +113,7 @@ type Plan struct {
 	Order         []string
 	Services      map[string]Service
 	Ports         map[string]ports.Allocation
+	PortOwners    map[string]string
 	Routes        Routes
 	Environment   map[string]config.Value
 }
@@ -133,9 +135,6 @@ func Build(cfg config.Config, id identity.Identity, options BuildOptions) (Plan,
 	closure := dependencyClosure(cfg.Services, roots)
 	order, err := topologicalOrder(cfg.Services, closure)
 	if err != nil {
-		return Plan{}, err
-	}
-	if err := ports.ValidatePreStartReferences(cfg.Ports, routePortReferences(cfg, closure)); err != nil {
 		return Plan{}, err
 	}
 	if err := checkRequiredCommands(cfg.Requires.Commands, options.Lookup); err != nil {
@@ -180,7 +179,7 @@ func Build(cfg config.Config, id identity.Identity, options BuildOptions) (Plan,
 	return Plan{
 		SchemaVersion: 1, Identity: id, Profile: profileName,
 		Roots: append([]string(nil), roots...), Order: order, Services: services,
-		Ports: copyAllocations(options.PortValues), Routes: filteredRoutes,
+		Ports: copyAllocations(options.PortValues), PortOwners: copyStrings(options.PortOwners), Routes: filteredRoutes,
 		Environment: copyValues(cfg.Env),
 	}, nil
 }
@@ -208,6 +207,22 @@ func (p Plan) JSON(showSensitive ...bool) ([]byte, error) {
 func (p Plan) Human(showSensitive ...bool) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "development session plan\nprofile: %s\nworktree: %s\nscope: %s\n", p.Profile, p.Identity.WorktreeRoot, p.Identity.Scope)
+	if len(p.Ports) > 0 {
+		builder.WriteString("ports:\n")
+		names := make([]string, 0, len(p.Ports))
+		for name := range p.Ports {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			allocation := p.Ports[name]
+			if allocation.Discovered {
+				fmt.Fprintf(&builder, "  %s: discover (owner=%s)\n", name, allocation.Owner)
+			} else {
+				fmt.Fprintf(&builder, "  %s: %d (owner=%s)\n", name, allocation.Port, allocation.Owner)
+			}
+		}
+	}
 	fmt.Fprintf(&builder, "services:\n")
 	for index, name := range p.Order {
 		service := p.Services[name]
@@ -229,7 +244,44 @@ func (p Plan) Human(showSensitive ...bool) string {
 			}
 			builder.WriteString(formatEnv(values))
 		}
+		if len(service.DependsOn) > 0 {
+			fmt.Fprintf(&builder, " depends_on=%s", strings.Join(service.DependsOn, ","))
+		}
+		if service.Ready != nil {
+			builder.WriteString(" ready=")
+			switch {
+			case service.Ready.TCP != "":
+				builder.WriteString("tcp:" + service.Ready.TCP)
+			case service.Ready.HTTP != nil:
+				fmt.Fprintf(&builder, "http:%s method=%s status=%v interval=%s timeout=%s overall_timeout=%s", service.Ready.HTTP.URL, service.Ready.HTTP.Method, service.Ready.HTTP.Status, service.Ready.HTTP.Interval.Duration(), service.Ready.HTTP.Timeout.Duration(), service.Ready.HTTP.OverallTimeout.Duration())
+			default:
+				builder.WriteString("command:" + strings.Join(service.Ready.Command, " "))
+			}
+		}
+		if len(service.Endpoints) > 0 {
+			builder.WriteString(" endpoints=")
+			builder.WriteString(formatStrings(service.Endpoints))
+		}
+		if service.Logs != nil {
+			fmt.Fprintf(&builder, " logs=%s:%s:%s", service.Logs.Destination, service.Logs.Path, service.Logs.Mode)
+		}
+		if service.Shutdown != nil {
+			fmt.Fprintf(&builder, " shutdown=signal:%s timeout:%s command:%s", service.Shutdown.Signal, service.Shutdown.Timeout.Duration(), strings.Join(service.Shutdown.Command, " "))
+		}
+		if service.Route != nil {
+			fmt.Fprintf(&builder, " route=project:%s branch:%s port:%s optional:%t export:%s", service.Route.Project, service.Route.Branch, service.Route.Port, service.Route.Optional, formatStrings(service.Route.Export))
+		}
 		builder.WriteByte('\n')
+	}
+	if len(p.Routes.Routes) > 0 {
+		builder.WriteString("routes:\n")
+		for _, item := range p.Routes.Routes {
+			fmt.Fprintf(&builder, "  %s: %s:%s port=%d available=%t optional=%t", item.Service, item.Project, item.Branch, item.Port, item.Available, item.Optional)
+			if item.URL != "" {
+				fmt.Fprintf(&builder, " url=%s", item.URL)
+			}
+			builder.WriteByte('\n')
+		}
 	}
 	return builder.String()
 }
@@ -243,6 +295,7 @@ type redactedPlan struct {
 	Order         []string                    `json:"order"`
 	Services      map[string]redactedService  `json:"services"`
 	Ports         map[string]ports.Allocation `json:"ports"`
+	PortOwners    map[string]string           `json:"port_owners,omitempty"`
 	Routes        Routes                      `json:"routes"`
 	Environment   map[string]string           `json:"environment"`
 }
@@ -254,6 +307,89 @@ type redactedService struct {
 	DependsOn   []string          `json:"depends_on,omitempty"`
 	Completion  string            `json:"completion"`
 	Environment map[string]string `json:"environment,omitempty"`
+	Ready       *redactedReady    `json:"ready,omitempty"`
+	Endpoints   map[string]string `json:"endpoints,omitempty"`
+	Logs        *redactedLogs     `json:"logs,omitempty"`
+	Shutdown    *redactedShutdown `json:"shutdown,omitempty"`
+	Route       *redactedRoute    `json:"route,omitempty"`
+}
+
+type redactedReady struct {
+	TCP     string        `json:"tcp,omitempty"`
+	HTTP    *redactedHTTP `json:"http,omitempty"`
+	Command []string      `json:"command,omitempty"`
+}
+
+type redactedHTTP struct {
+	URL                string            `json:"url"`
+	Method             string            `json:"method,omitempty"`
+	Status             []int             `json:"status,omitempty"`
+	Headers            map[string]string `json:"headers,omitempty"`
+	Interval           string            `json:"interval,omitempty"`
+	Timeout            string            `json:"timeout,omitempty"`
+	OverallTimeout     string            `json:"overall_timeout,omitempty"`
+	InsecureSkipVerify bool              `json:"insecure_skip_verify,omitempty"`
+}
+
+type redactedLogs struct {
+	Destination string `json:"destination,omitempty"`
+	Path        string `json:"path,omitempty"`
+	Mode        string `json:"mode,omitempty"`
+	Streams     string `json:"streams,omitempty"`
+	MaxBytes    int64  `json:"max_bytes,omitempty"`
+	Backups     int    `json:"backups,omitempty"`
+}
+
+type redactedShutdown struct {
+	Signal      string   `json:"signal,omitempty"`
+	GracePeriod string   `json:"grace_period,omitempty"`
+	Command     []string `json:"command,omitempty"`
+	Timeout     string   `json:"timeout,omitempty"`
+}
+
+type redactedRoute struct {
+	Project  string            `json:"project,omitempty"`
+	Branch   string            `json:"branch,omitempty"`
+	Port     string            `json:"port"`
+	Optional bool              `json:"optional,omitempty"`
+	Export   map[string]string `json:"export,omitempty"`
+}
+
+func readyView(value *config.Ready) *redactedReady {
+	if value == nil {
+		return nil
+	}
+	result := &redactedReady{TCP: value.TCP, Command: append([]string(nil), value.Command...)}
+	if value.HTTP != nil {
+		result.HTTP = &redactedHTTP{
+			URL: value.HTTP.URL, Method: value.HTTP.Method, Status: append([]int(nil), value.HTTP.Status...),
+			Headers: copyStrings(value.HTTP.Headers), Interval: value.HTTP.Interval.Duration().String(),
+			Timeout: value.HTTP.Timeout.Duration().String(), OverallTimeout: value.HTTP.OverallTimeout.Duration().String(),
+			InsecureSkipVerify: value.HTTP.InsecureSkipVerify,
+		}
+	}
+	return result
+}
+
+func logsView(value *config.Logs) *redactedLogs {
+	if value == nil {
+		return nil
+	}
+	return &redactedLogs{Destination: value.Destination, Path: value.Path, Mode: value.Mode, Streams: value.Streams, MaxBytes: value.MaxBytes, Backups: value.Backups}
+}
+
+func shutdownView(value *config.Shutdown) *redactedShutdown {
+	if value == nil {
+		return nil
+	}
+	return &redactedShutdown{Signal: value.Signal, GracePeriod: value.GracePeriod.Duration().String(), Command: append([]string(nil), value.Command...), Timeout: value.Timeout.Duration().String()}
+}
+
+func routeView(value *config.Route) *redactedRoute {
+	if value == nil {
+		return nil
+	}
+	return &redactedRoute{Project: value.Project, Branch: value.Branch, Port: value.Port, Optional: value.Optional, Export: copyStrings(value.Export)}
 }
 
 func (p Plan) redacted() redactedPlan {
@@ -263,12 +399,14 @@ func (p Plan) redacted() redactedPlan {
 			Command: append([]string(nil), service.Command...), Shell: service.Shell,
 			WorkingDir: service.WorkingDir, DependsOn: append([]string(nil), service.DependsOn...),
 			Completion: service.Completion, Environment: redactedValues(service.Env),
+			Ready: readyView(service.Ready), Endpoints: copyStrings(service.Endpoints), Logs: logsView(service.Logs),
+			Shutdown: shutdownView(service.Shutdown), Route: routeView(service.Route),
 		}
 	}
 	return redactedPlan{
 		SchemaVersion: p.SchemaVersion, Profile: p.Profile, Worktree: p.Identity.WorktreeRoot,
 		Scope: p.Identity.Scope, Roots: p.Roots, Order: p.Order, Services: services,
-		Ports: p.Ports, Routes: p.Routes, Environment: redactedValues(p.Environment),
+		Ports: p.Ports, PortOwners: p.PortOwners, Routes: p.Routes, Environment: redactedValues(p.Environment),
 	}
 }
 
@@ -609,6 +747,19 @@ func formatEnv(values map[string]config.Value) string {
 		parts = append(parts, name+"="+redactedValues(map[string]config.Value{name: values[name]})[name])
 	}
 	return strings.Join(parts, ",")
+}
+
+func formatStrings(values map[string]string) string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+values[key])
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }
 
 var _ primitives.CommandLookup = commandLookup{}

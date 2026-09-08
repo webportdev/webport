@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/webportdev/webport/internal/devsession/config"
 	"github.com/webportdev/webport/internal/devsession/identity"
@@ -119,6 +120,51 @@ func TestBuildSelectedServiceIncludesDependenciesOnly(t *testing.T) {
 	}
 	if got.Profile != "service:api" || len(got.Services) != 2 || got.Services["frontend"].Name != "" {
 		t.Fatalf("selected plan = %+v", got)
+	}
+}
+
+func TestBuildAllowsRouteBackedDiscoveredPortForRuntimeActivation(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Config{
+		Ports:    map[string]config.Port{"frontend": {Discover: true}},
+		Profiles: map[string]config.Profile{"default": {Services: []string{"frontend"}}},
+		Services: map[string]config.Service{"frontend": {Command: []string{"frontend"}, Route: &config.Route{Port: "frontend"}}},
+	}
+	got, err := Build(cfg, identity.Identity{Project: "app", Branch: "main", WorktreeRoot: dir, ConfigDirectory: dir}, BuildOptions{
+		Lookup: lookupFake{}, PortValues: map[string]ports.Allocation{"frontend": {Name: "frontend", Owner: "frontend", Discovered: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Ports["frontend"].Discovered {
+		t.Fatalf("discovered port lost from plan: %+v", got.Ports)
+	}
+}
+
+func TestJSONIncludesDetailedServiceLifecycleSettings(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Config{
+		Profiles: map[string]config.Profile{"default": {Services: []string{"api"}}},
+		Services: map[string]config.Service{"api": {
+			Command: []string{"api"}, Completion: "exit",
+			Ready: &config.Ready{TCP: "127.0.0.1:8000"}, Endpoints: map[string]string{"local": "http://127.0.0.1:8000"},
+			Logs: &config.Logs{Destination: "file", Path: "api.log", Mode: "append"},
+			Shutdown: &config.Shutdown{Command: []string{"stop-api"}, Timeout: config.Duration(2 * time.Second)},
+			Route: &config.Route{Project: "app", Branch: "main", Port: "api", Optional: true, Export: map[string]string{"url": "API_URL"}},
+		}},
+	}
+	got, err := Build(cfg, identity.Identity{Project: "app", Branch: "main", WorktreeRoot: dir, ConfigDirectory: dir}, BuildOptions{Lookup: lookupFake{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := got.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"ready"`, `"endpoints"`, `"logs"`, `"shutdown"`, `"route"`, `"grace_period"`} {
+		if !strings.Contains(string(encoded), field) {
+			t.Fatalf("JSON omitted %s: %s", field, encoded)
+		}
 	}
 }
 

@@ -43,6 +43,9 @@ type Scanner struct {
 	ProbeTimeout time.Duration
 	// ClientToken restricts scans to a user-run webport dev process tree.
 	ClientToken string
+	// IncludeSessionManaged permits explicit scans of a configured session
+	// child. Normal daemon scans continue to ignore those processes.
+	IncludeSessionManaged bool
 }
 
 // Scan returns the complete currently discoverable process route set.
@@ -87,13 +90,44 @@ func (s Scanner) Scan(ctx context.Context) ([]route.Route, []error) {
 	return discovered, errs
 }
 
+// ScanProcess selects the listener owned by one process. It is used by a
+// configured session after its command has started, so it deliberately allows
+// WEBPORT_SESSION_MANAGED children and does not require a daemon route lease.
+func (s Scanner) ScanProcess(ctx context.Context, pid int) (int, error) {
+	processes, scanErrors := scanProcesses(ctx)
+	for _, proc := range processes {
+		if proc.pid != pid {
+			continue
+		}
+		selected, err := selectListener(ctx, proc, s.probeTimeout())
+		if err != nil {
+			return 0, err
+		}
+		return selected.port, nil
+	}
+	if len(scanErrors) > 0 {
+		return 0, scanErrors[0]
+	}
+	return 0, fmt.Errorf("process %d has no discoverable listener", pid)
+}
+
 func (s Scanner) acceptsProcess(proc process) bool {
+	if s.IncludeSessionManaged {
+		return proc.env[routeEnv] != ""
+	}
 	if s.ClientToken != "" {
 		return proc.env[clientTokenEnv] == s.ClientToken
 	}
 	// Configured foreground sessions publish their own readiness-gated
 	// leases. Their generic route environment is context, not an opt-in.
 	return proc.env[sessionManagedEnv] != "1"
+}
+
+func (s Scanner) probeTimeout() time.Duration {
+	if s.ProbeTimeout > 0 {
+		return s.ProbeTimeout
+	}
+	return 500 * time.Millisecond
 }
 
 func selectListener(ctx context.Context, proc process, timeout time.Duration) (listener, error) {

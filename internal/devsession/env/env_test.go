@@ -88,6 +88,30 @@ func TestResolveRejectsCyclesUnknownReferencesAndShellExpansion(t *testing.T) {
 	}
 }
 
+func TestResolveDefersRuntimePortUntilServiceStart(t *testing.T) {
+	literal := func(value string) config.Value { return config.Value{Literal: stringPtr(value)} }
+	values, err := Resolve(Input{
+		Top:           map[string]config.Value{"API_URL": literal("http://127.0.0.1:${ports.api}")},
+		DeferredPorts: map[string]struct{}{"api": {}},
+		DeferRuntime:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := values.Get("API_URL")
+	if !ok || entry.Value != "http://127.0.0.1:${ports.api}" {
+		t.Fatalf("deferred value = %+v", entry)
+	}
+	resolved, err := values.ExpandRuntimeValues(Runtime{Ports: map[string]int{"api": 4312}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, _ = resolved.Get("API_URL")
+	if entry.Value != "http://127.0.0.1:4312" {
+		t.Fatalf("resolved value = %+v", entry)
+	}
+}
+
 func TestDotenvSyntaxIsNotSourcedThroughShell(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(path, []byte("A=$(touch /tmp/should-not-exist)\n"), 0o600); err != nil {

@@ -29,9 +29,30 @@ func prepare(ctx context.Context, cfg config.Config, id identity.Identity, optio
 		return plan.Plan{}, nil, err
 	}
 	owners := make(map[string]string)
+	portOwners := make(map[string]string)
 	for name, service := range cfg.Services {
 		if service.Route != nil {
 			owners[service.Route.Port] = name
+			portOwners[service.Route.Port] = name
+		}
+	}
+	for portName, spec := range cfg.Ports {
+		if _, exists := portOwners[portName]; exists {
+			continue
+		}
+		for name, service := range cfg.Services {
+			if referencesPort(service, portName) {
+				if previous, exists := portOwners[portName]; exists && previous != name {
+					return plan.Plan{}, nil, fmt.Errorf("discovered port %q is referenced by services %q and %q; its owner is ambiguous", portName, previous, name)
+				}
+				portOwners[portName] = name
+			}
+		}
+		if spec.Discover && portOwners[portName] == "" {
+			return plan.Plan{}, nil, fmt.Errorf("discovered port %q has no owning service", portName)
+		}
+		if owner := portOwners[portName]; owner != "" {
+			owners[portName] = owner
 		}
 	}
 	allocations, err := ports.Resolve(ctx, cfg.Ports, owners, ports.Options{})
@@ -56,7 +77,7 @@ func prepare(ctx context.Context, cfg config.Config, id identity.Identity, optio
 	if err != nil {
 		return plan.Plan{}, nil, err
 	}
-	p, err := plan.Build(cfg, id, plan.BuildOptions{Profile: options.Profile, Service: options.Service, PortValues: allocations, Routes: routes})
+	p, err := plan.Build(cfg, id, plan.BuildOptions{Profile: options.Profile, Service: options.Service, PortValues: allocations, PortOwners: portOwners, Routes: routes})
 	if err != nil {
 		return plan.Plan{}, nil, err
 	}
@@ -72,7 +93,7 @@ func prepare(ctx context.Context, cfg config.Config, id identity.Identity, optio
 		if err != nil {
 			return plan.Plan{}, nil, fmt.Errorf("service %q command: %w", name, err)
 		}
-		if len(args) > 0 {
+		if len(args) > 0 && !hasDeferredPort(args, runtime) {
 			if err := checkExecutable(args[0], service.WorkingDir); err != nil {
 				return plan.Plan{}, nil, fmt.Errorf("service %q command: %w", name, err)
 			}
@@ -87,7 +108,7 @@ func prepare(ctx context.Context, cfg config.Config, id identity.Identity, optio
 			}
 			return checkExecutable(expanded[0], service.WorkingDir)
 		}
-		if service.Shutdown != nil {
+		if service.Shutdown != nil && !hasDeferredPort(service.Shutdown.Command, runtime) {
 			if err := checkArgs(service.Shutdown.Command); err != nil {
 				return plan.Plan{}, nil, fmt.Errorf("service %q shutdown: %w", name, err)
 			}
@@ -97,7 +118,7 @@ func prepare(ctx context.Context, cfg config.Config, id identity.Identity, optio
 			if err := checkArgs(ready.Command); err != nil {
 				return plan.Plan{}, nil, fmt.Errorf("service %q readiness: %w", name, err)
 			}
-			if ready.TCP != "" {
+			if ready.TCP != "" && !hasDeferredPort([]string{ready.TCP}, runtime) {
 				endpoint, err := values.ExpandRuntime(ready.TCP, runtime)
 				if err == nil {
 					_, _, err = net.SplitHostPort(endpoint)
@@ -106,7 +127,7 @@ func prepare(ctx context.Context, cfg config.Config, id identity.Identity, optio
 					return plan.Plan{}, nil, fmt.Errorf("service %q: invalid TCP readiness", name)
 				}
 			}
-			if ready.HTTP != nil {
+			if ready.HTTP != nil && !hasDeferredPort([]string{ready.HTTP.URL}, runtime) {
 				endpoint, err := values.ExpandRuntime(ready.HTTP.URL, runtime)
 				if err != nil {
 					return plan.Plan{}, nil, fmt.Errorf("service %q HTTP readiness: %w", name, err)
@@ -188,7 +209,7 @@ func composeEnvironments(cfg config.Config, p plan.Plan, generate bool) (map[str
 		if err != nil {
 			return nil, err
 		}
-		values, err := env.Resolve(env.Input{Inherited: environmentFromProcess(), DotenvFiles: dotenv, Top: top, Profile: profile, Service: service, Project: p.Identity.Project, Branch: p.Identity.Branch, Scope: p.Identity.Scope, Ports: runtime.Ports, Routes: p.Routes, ServiceName: name})
+		values, err := env.Resolve(env.Input{Inherited: environmentFromProcess(), DotenvFiles: dotenv, Top: top, Profile: profile, Service: service, Project: p.Identity.Project, Branch: p.Identity.Branch, Scope: p.Identity.Scope, Ports: runtime.Ports, DeferredPorts: runtime.DeferredPorts, DeferRuntime: true, Routes: p.Routes, ServiceName: name})
 		if err != nil {
 			return nil, fmt.Errorf("service %q environment: %w", name, err)
 		}
@@ -200,25 +221,90 @@ func composeEnvironments(cfg config.Config, p plan.Plan, generate bool) (map[str
 
 func runtimeFor(p plan.Plan) env.Runtime {
 	values := make(map[string]int)
+	deferred := make(map[string]struct{})
 	for name, port := range p.Ports {
-		if !port.Discovered {
+		if !port.Discovered || port.Port > 0 {
 			values[name] = port.Port
 		}
+		if port.Discovered && port.Port == 0 {
+			deferred[name] = struct{}{}
+		}
 	}
-	return env.Runtime{Project: p.Identity.Project, Branch: p.Identity.Branch, Scope: p.Identity.Scope, Ports: values, Routes: p.Routes}
+	routes := p.Routes
+	routes.Routes = append([]plan.Route(nil), p.Routes.Routes...)
+	return env.Runtime{Project: p.Identity.Project, Branch: p.Identity.Branch, Scope: p.Identity.Scope, Ports: values, DeferredPorts: deferred, Routes: routes}
 }
 
 func inspectEnvironments(p plan.Plan, environments map[string]env.Values) plan.Plan {
 	p.Services = cloneServices(p.Services)
+	runtime := runtimeFor(p)
 	for name, values := range environments {
+		if resolved, err := values.ExpandRuntimeValues(runtime); err == nil {
+			values = resolved
+		}
 		service := p.Services[name]
 		service.Env = values.ConfigValues()
 		p.Services[name] = service
 	}
-	if len(p.Roots) > 0 {
-		p.Environment = environments[p.Roots[0]].ConfigValues()
-	}
+	p.Environment = sessionEnvironment(p, environments).ConfigValues()
 	return p
+}
+
+func sessionEnvironment(p plan.Plan, environments map[string]env.Values) env.Values {
+	var result env.Values
+	for _, name := range p.Order {
+		result = result.Merge(environments[name])
+	}
+	return result
+}
+
+func referencesPort(service config.Service, name string) bool {
+	token := "${ports." + name + "}"
+	values := append([]string{}, service.Command...)
+	values = append(values, service.Shell)
+	values = append(values, service.DependsOn...)
+	if service.Ready != nil {
+		values = append(values, service.Ready.TCP)
+		values = append(values, service.Ready.Command...)
+		if service.Ready.HTTP != nil {
+			values = append(values, service.Ready.HTTP.URL)
+			for key, value := range service.Ready.HTTP.Headers {
+				values = append(values, key, value)
+			}
+		}
+	}
+	for key, value := range service.Env {
+		values = append(values, key)
+		if value.Literal != nil {
+			values = append(values, *value.Literal)
+		}
+	}
+	for key, value := range service.Endpoints {
+		values = append(values, key, value)
+	}
+	if service.Shutdown != nil {
+		values = append(values, service.Shutdown.Command...)
+	}
+	if service.Route != nil {
+		values = append(values, service.Route.Project, service.Route.Branch, service.Route.Port)
+	}
+	for _, value := range values {
+		if strings.Contains(value, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDeferredPort(values []string, runtime env.Runtime) bool {
+	for _, value := range values {
+		for name := range runtime.DeferredPorts {
+			if strings.Contains(value, "${ports."+name+"}") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func cloneServices(input map[string]plan.Service) map[string]plan.Service {
