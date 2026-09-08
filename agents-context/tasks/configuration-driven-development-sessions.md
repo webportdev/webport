@@ -23,7 +23,8 @@ resume without reconstructing completed work from the repository diff.
 | 10 | complete | Added immutable plan construction in `internal/devsession/plan`: profile/service selection, dependency closure/cycles, deterministic topological order, command preflight, working-directory/port checks, route filtering, validation, and redacted human/JSON output. Focused tests pass. |
 | 11 | complete | Added generic command runner under `internal/devsession/command`: direct argv/shell execution, platform process groups, structured lifecycle results, bounded termination, and concurrent lossless stdout/stderr capture with long/partial-line handling. Focused tests pass. |
 | 12 | complete | Added cancellable readiness and endpoint checks under `internal/devsession/readiness`: TCP, HTTP(S), argv commands, bounded retries/timeouts, redacted probe errors, and local endpoint expansion. Focused tests pass. |
-| 13–22 | pending | Not started. |
+| 13 | complete | Connected the phase-1 configured `webport dev` path through loading, identity, ports, routes, secrets, environment, planning, command launch, readiness, prefixed output/logging, optional route leasing, and cleanup. Added configured-session CLI dispatch and end-to-end helper tests. |
+| 14–22 | pending | Not started. |
 
 ## Target outcome
 

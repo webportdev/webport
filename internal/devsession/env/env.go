@@ -24,6 +24,14 @@ type Values struct {
 	entries map[string]Entry
 }
 
+type Runtime struct {
+	Project string
+	Branch  string
+	Scope   string
+	Ports   map[string]int
+	Routes  plan.Routes
+}
+
 type Input struct {
 	Inherited   map[string]string
 	DotenvFiles []string
@@ -166,6 +174,69 @@ func (v Values) ExpandArgument(value string) (string, error) {
 
 func (v Values) ExpandShell(value string) (string, error) {
 	return v.expand(value, true)
+}
+
+// ExpandRuntime resolves non-environment runtime references used by readiness
+// URLs, endpoints, and command arguments after ports and routes are planned.
+func (v Values) ExpandRuntime(value string, runtime Runtime) (string, error) {
+	refs := interpolation.FindAllStringSubmatch(value, -1)
+	if strings.Contains(value, "${") && len(refs) == 0 {
+		return "", errors.New("malformed interpolation")
+	}
+	for _, ref := range refs {
+		replacement, sensitive, err := v.runtimeReference(ref[1], runtime)
+		if err != nil {
+			return "", err
+		}
+		if sensitive {
+			return "", fmt.Errorf("sensitive environment value cannot be interpolated into runtime text")
+		}
+		value = strings.Replace(value, ref[0], replacement, 1)
+	}
+	return value, nil
+}
+
+func (v Values) runtimeReference(reference string, runtime Runtime) (string, bool, error) {
+	switch {
+	case reference == "project":
+		return runtime.Project, false, nil
+	case reference == "branch":
+		return runtime.Branch, false, nil
+	case reference == "session.scope":
+		return runtime.Scope, false, nil
+	case strings.HasPrefix(reference, "ports."):
+		name := strings.TrimPrefix(reference, "ports.")
+		port, ok := runtime.Ports[name]
+		if !ok {
+			return "", false, fmt.Errorf("unknown port %q", name)
+		}
+		return strconv.Itoa(port), false, nil
+	case strings.HasPrefix(reference, "env."):
+		entry, ok := v.entries[strings.TrimPrefix(reference, "env.")]
+		if !ok {
+			return "", false, fmt.Errorf("unknown environment variable %q", strings.TrimPrefix(reference, "env."))
+		}
+		return entry.Value, entry.Sensitive, nil
+	case strings.HasPrefix(reference, "routes."):
+		parts := strings.Split(strings.TrimPrefix(reference, "routes."), ".")
+		if len(parts) != 2 || (parts[1] != "host" && parts[1] != "url") {
+			return "", false, fmt.Errorf("invalid route reference %q", reference)
+		}
+		for _, item := range runtime.Routes.Routes {
+			if item.Service == parts[0] {
+				if !item.Available {
+					return "", false, fmt.Errorf("route %q is unavailable", parts[0])
+				}
+				if parts[1] == "host" {
+					return item.Host, false, nil
+				}
+				return item.URL, false, nil
+			}
+		}
+		return "", false, fmt.Errorf("unknown route %q", parts[0])
+	default:
+		return "", false, fmt.Errorf("unknown interpolation %q", reference)
+	}
 }
 
 func (v Values) expand(value string, rejectSensitive bool) (string, error) {

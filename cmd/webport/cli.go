@@ -26,6 +26,7 @@ import (
 	gitdetect "github.com/webportdev/webport/cmd/webportctl/git"
 	client "github.com/webportdev/webport/cmd/webportctl/runtime"
 	"github.com/webportdev/webport/internal/devsession/daemon"
+	devsession "github.com/webportdev/webport/internal/devsession/session"
 	"github.com/webportdev/webport/internal/discovery"
 	"github.com/webportdev/webport/internal/route"
 )
@@ -146,9 +147,12 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	var values routeFlags
 	var startupTimeout time.Duration
 	var format string
+	var configPath, profile string
 	addRouteFlags(flags, &values)
 	flags.DurationVar(&startupTimeout, "startup-timeout", 30*time.Second, "time to wait for an HTTP listener")
 	flags.StringVar(&format, "format", "", "resolution output format: json or env")
+	flags.StringVar(&configPath, "config", "", "development session configuration path")
+	flags.StringVar(&profile, "profile", "", "development session profile")
 	flagArgs := args
 	if separator >= 0 {
 		flagArgs = args[:separator]
@@ -160,17 +164,28 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 		return errors.New("--format must be json or env")
 	}
 	if separator < 0 {
-		if format == "" {
-			return errors.New("usage: webport dev [options] -- COMMAND [ARG...]")
+		if format != "" {
+			if err := values.inferIdentity(); err != nil {
+				return err
+			}
+			resolution, err := resolveWrapperValues(values)
+			if err != nil {
+				return err
+			}
+			return writeWrapperResolution(resolution, format, out)
 		}
-		if err := values.inferIdentity(); err != nil {
-			return err
+		positional := flags.Args()
+		if len(positional) > 1 {
+			return errors.New("webport dev accepts at most one service name")
 		}
-		resolution, err := resolveWrapperValues(values)
-		if err != nil {
-			return err
+		service := ""
+		if len(positional) == 1 {
+			service = positional[0]
 		}
-		return writeWrapperResolution(resolution, format, out)
+		return devsession.Run(context.Background(), devsession.Options{
+			ConfigPath: configPath, Profile: profile, Service: service,
+			In: in, Out: out, ErrOut: errOut,
+		})
 	}
 	if separator == len(args)-1 {
 		return errors.New("usage: webport dev [options] -- COMMAND [ARG...]")
