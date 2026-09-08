@@ -1,0 +1,105 @@
+package env
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/webportdev/webport/internal/devsession/config"
+	"github.com/webportdev/webport/internal/devsession/plan"
+)
+
+func TestResolveAppliesPrecedenceAndForwardReferences(t *testing.T) {
+	dotenv := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(dotenv, []byte("VALUE=dotenv\nDOT_ONLY=from-dotenv\nQUOTED='a # b' # comment\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	literal := func(value string) config.Value { return config.Value{Literal: stringPtr(value)} }
+	got, err := Resolve(Input{
+		Inherited:   map[string]string{"VALUE": "inherited", "INHERITED": "yes"},
+		DotenvFiles: []string{dotenv},
+		Top: map[string]config.Value{
+			"VALUE":   literal("top"),
+			"FORWARD": literal("${env.SERVICE}-${env.PROFILE}"),
+		},
+		Profile: map[string]config.Value{"PROFILE": literal("profile")},
+		Service: map[string]config.Value{"SERVICE": literal("service")},
+		Project: "app", Branch: "main", Scope: "app-worktree-abc",
+		Ports: map[string]int{"api": 8080},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"VALUE": "top", "DOT_ONLY": "from-dotenv", "INHERITED": "yes", "FORWARD": "service-profile", "QUOTED": "a # b"} {
+		entry, ok := got.Get(name)
+		if !ok || entry.Value != want {
+			t.Errorf("%s = %+v, want %q", name, entry, want)
+		}
+	}
+}
+
+func TestResolveSupportsAllowedReferencesAndSensitiveTaint(t *testing.T) {
+	literal := func(value string, sensitive bool) config.Value {
+		return config.Value{Literal: stringPtr(value), Sensitive: sensitive}
+	}
+	routes := plan.Routes{Routes: []plan.Route{{Service: "frontend", Host: "app-main.test", URL: "https://app-main.test", Available: true, Export: map[string]string{"host": "PUBLIC_HOST"}, ExportReceivers: []string{"frontend"}}}}
+	got, err := Resolve(Input{
+		Top: map[string]config.Value{
+			"SECRET":  literal("shh", true),
+			"DERIVED": literal("prefix-${env.SECRET}", false),
+			"URL":     literal("${routes.frontend.url}:${ports.api}", false),
+		},
+		Project: "app", Branch: "main", Scope: "scope", Ports: map[string]int{"api": 3000}, Routes: routes, ServiceName: "frontend",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived, _ := got.Get("DERIVED")
+	if !derived.Sensitive || derived.Value != "prefix-shh" {
+		t.Fatalf("derived = %+v", derived)
+	}
+	urlValue, _ := got.Get("URL")
+	if urlValue.Value != "https://app-main.test:3000" || urlValue.Sensitive {
+		t.Fatalf("url = %+v", urlValue)
+	}
+	if _, err := got.ExpandArgument("--secret=${SECRET}"); err == nil {
+		t.Fatal("ExpandArgument() allowed sensitive interpolation")
+	}
+	if rendered, err := got.Render("bash", false); err != nil || !strings.Contains(rendered, "SECRET='<redacted>'") {
+		t.Fatalf("redacted bash = %q, %v", rendered, err)
+	}
+	if rendered, err := got.Render("fish", true); err != nil || !strings.Contains(rendered, "set -gx URL") {
+		t.Fatalf("fish = %q, %v", rendered, err)
+	}
+}
+
+func TestResolveRejectsCyclesUnknownReferencesAndShellExpansion(t *testing.T) {
+	literal := func(value string) config.Value { return config.Value{Literal: stringPtr(value)} }
+	for _, values := range []map[string]config.Value{
+		{"A": literal("${env.B}"), "B": literal("${env.A}")},
+		{"A": literal("${env.MISSING}")},
+		{"A": literal("${HOME}")},
+	} {
+		_, err := Resolve(Input{Top: values})
+		if err == nil {
+			t.Errorf("Resolve(%v) error = nil", values)
+		}
+	}
+}
+
+func TestDotenvSyntaxIsNotSourcedThroughShell(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(path, []byte("A=$(touch /tmp/should-not-exist)\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Resolve(Input{DotenvFiles: []string{path}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat("/tmp/should-not-exist"); err == nil {
+		t.Fatal("dotenv parser executed shell syntax")
+	}
+}
+
+func stringPtr(value string) *string { return &value }
