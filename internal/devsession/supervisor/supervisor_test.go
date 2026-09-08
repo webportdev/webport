@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/webportdev/webport/internal/devsession/config"
 	"github.com/webportdev/webport/internal/devsession/env"
 	"github.com/webportdev/webport/internal/devsession/plan"
 )
@@ -68,6 +69,40 @@ func TestRunBlocksDependentAfterFailureAndCancelsRunningProcesses(t *testing.T) 
 	if err != nil || result.States["server"] != StateStopped {
 		t.Fatalf("cancel result = %+v, %v", result, err)
 	}
+}
+
+func TestRunExecutesRegisteredShutdownCommandsInReverseOrder(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "cleanup")
+	services := map[string]plan.Service{
+		"resource": {
+			Name: "resource", Command: []string{"sh", "-c", "exit 0"}, Completion: "exit",
+			Shutdown: &config.Shutdown{Command: []string{"sh", "-c", "printf resource >> \"$CLEANUP\""}, Timeout: config.Duration(time.Second)},
+		},
+		"dependent": {
+			Name: "dependent", Command: []string{"sh", "-c", "exit 0"}, Completion: "exit", DependsOn: []string{"resource"},
+			Shutdown: &config.Shutdown{Command: []string{"sh", "-c", "printf dependent >> \"$CLEANUP\""}, Timeout: config.Duration(time.Second)},
+		},
+	}
+	values := mustValuesWithCleanup(t, marker)
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	result, err := Run(ctx, plan.Plan{Order: []string{"resource", "dependent"}, Services: services}, Options{Environments: allEnvironments(values, services)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil || string(data) != "dependentresource" {
+		t.Fatalf("cleanup order = %q, %v; states=%+v", data, err, result.States)
+	}
+}
+
+func mustValuesWithCleanup(t *testing.T, path string) env.Values {
+	t.Helper()
+	values, err := env.Resolve(env.Input{Inherited: map[string]string{"CLEANUP": path}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return values
 }
 
 func mustValues(t *testing.T, marker string) env.Values {

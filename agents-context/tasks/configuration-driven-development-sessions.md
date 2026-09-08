@@ -25,7 +25,8 @@ resume without reconstructing completed work from the repository diff.
 | 12 | complete | Added cancellable readiness and endpoint checks under `internal/devsession/readiness`: TCP, HTTP(S), argv commands, bounded retries/timeouts, redacted probe errors, and local endpoint expansion. Focused tests pass. |
 | 13 | complete | Connected the phase-1 configured `webport dev` path through loading, identity, ports, routes, secrets, environment, planning, command launch, readiness, prefixed output/logging, optional route leasing, and cleanup. Added configured-session CLI dispatch and end-to-end helper tests. |
 | 14 | complete | Added `internal/devsession/supervisor` dependency-aware concurrent startup and connected multi-service configured sessions to it. Independent branches run concurrently, exit tasks run once, dependency failures block dependents, and cancellation is leak-safe in focused tests. |
-| 15–22 | pending | Not started. |
+| 15 | complete | Centralized foreground supervisor ownership and rollback: process cancellation, required-process failure semantics, shutdown registration after successful starts, reverse dependency cleanup, bounded cleanup commands, and initiating-error preservation. Focused lifecycle tests pass. |
+| 16–22 | pending | Not started. |
 
 ## Target outcome
 
