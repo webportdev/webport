@@ -148,11 +148,15 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	var startupTimeout time.Duration
 	var format string
 	var configPath, profile string
+	var showSensitive bool
+	var shell string
 	addRouteFlags(flags, &values)
 	flags.DurationVar(&startupTimeout, "startup-timeout", 30*time.Second, "time to wait for an HTTP listener")
 	flags.StringVar(&format, "format", "", "resolution output format: json or env")
 	flags.StringVar(&configPath, "config", "", "development session configuration path")
 	flags.StringVar(&profile, "profile", "", "development session profile")
+	flags.BoolVar(&showSensitive, "show-sensitive", false, "show sensitive values in interactive inspection output")
+	flags.StringVar(&shell, "shell", "bash", "environment output shell: bash, fish, or json")
 	flagArgs := args
 	if separator >= 0 {
 		flagArgs = args[:separator]
@@ -164,6 +168,10 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 		return errors.New("--format must be json or env")
 	}
 	if separator < 0 {
+		positional := flags.Args()
+		if len(positional) > 0 && isDevInspectionOperation(positional[0]) {
+			return runDevInspection(positional[0], configPath, profile, values.api, shell, format, showSensitive, in, out)
+		}
 		if format != "" {
 			if err := values.inferIdentity(); err != nil {
 				return err
@@ -174,7 +182,6 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 			}
 			return writeWrapperResolution(resolution, format, out)
 		}
-		positional := flags.Args()
 		if len(positional) > 1 {
 			return errors.New("webport dev accepts at most one service name")
 		}
@@ -183,7 +190,7 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 			service = positional[0]
 		}
 		return devsession.Run(context.Background(), devsession.Options{
-			ConfigPath: configPath, Profile: profile, Service: service,
+			ConfigPath: configPath, Profile: profile, Service: service, API: values.api,
 			In: in, Out: out, ErrOut: errOut,
 		})
 	}
@@ -294,6 +301,92 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 		return commandErr
 	}
 	return releaseErr
+}
+
+func isDevInspectionOperation(operation string) bool {
+	switch operation {
+	case "check", "config", "status", "env", "stop":
+		return true
+	default:
+		return false
+	}
+}
+
+func runDevInspection(operation, configPath, profile, api, shell, format string, showSensitive bool, in io.Reader, out io.Writer) error {
+	options := devsession.Options{ConfigPath: configPath, Profile: profile, API: api, In: in, Out: out}
+	switch operation {
+	case "check", "config":
+		resolved, err := devsession.InspectConfig(context.Background(), options)
+		if err != nil {
+			return err
+		}
+		if operation == "check" {
+			_, err = fmt.Fprintln(out, "PASS development session configuration is valid")
+			return err
+		}
+		if format == "json" {
+			encoded, encodeErr := resolved.JSON()
+			if encodeErr != nil {
+				return encodeErr
+			}
+			_, err = fmt.Fprintln(out, string(encoded))
+			return err
+		}
+		_, err = io.WriteString(out, resolved.Human())
+		return err
+	case "status":
+		value, err := devsession.Status(options)
+		if err != nil {
+			return err
+		}
+		if format == "json" {
+			encoded, encodeErr := json.MarshalIndent(value, "", "  ")
+			if encodeErr != nil {
+				return encodeErr
+			}
+			_, err = fmt.Fprintln(out, string(encoded))
+			return err
+		}
+		_, err = fmt.Fprintf(out, "development session status\n%v\n", value)
+		return err
+	case "env":
+		response, err := devsession.Control(context.Background(), options, "env", map[string]any{"show_sensitive": showSensitive})
+		if err != nil {
+			return err
+		}
+		if !response.OK {
+			return errors.New(response.Error)
+		}
+		values := map[string]string{}
+		if raw, ok := response.Payload["values"].(map[string]any); ok {
+			for name, value := range raw {
+				if stringValue, ok := value.(string); ok {
+					values[name] = stringValue
+				}
+			}
+		}
+		if format == "json" {
+			shell = "json"
+		}
+		rendered, err := devsession.RenderEnvironment(values, shell)
+		if err != nil {
+			return err
+		}
+		_, err = io.WriteString(out, rendered)
+		return err
+	case "stop":
+		response, err := devsession.Control(context.Background(), options, "stop", nil)
+		if err != nil {
+			return err
+		}
+		if !response.OK {
+			return errors.New(response.Error)
+		}
+		_, err = fmt.Fprintln(out, "development session stop requested")
+		return err
+	default:
+		return fmt.Errorf("unsupported development session operation %q", operation)
+	}
 }
 
 type wrapperResolution struct {

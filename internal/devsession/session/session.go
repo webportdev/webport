@@ -3,6 +3,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -74,11 +75,35 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	startedAt := time.Now()
 	controlPath := strings.TrimSuffix(stateStore.LivePath, ".live.json") + ".sock"
 	var cancelSession context.CancelFunc
+	var activePlan plan.Plan
+	activeEnvironments := make(map[string]env.Values)
+	var liveState state.LiveState
 	control, controlErr := state.StartControl(controlPath, func(_ context.Context, request state.Request) state.Response {
-		if request.Operation == "stop" && cancelSession != nil {
-			cancelSession()
+		switch request.Operation {
+		case "stop":
+			if cancelSession != nil {
+				cancelSession()
+			}
+			return state.Response{OK: true, Payload: map[string]any{"session_id": id.SessionID}}
+		case "status":
+			return state.Response{OK: true, Payload: map[string]any{"state": liveState}}
+		case "config":
+			encoded, _ := activePlan.JSON()
+			var payload map[string]any
+			_ = json.Unmarshal(encoded, &payload)
+			return state.Response{OK: true, Payload: payload}
+		case "env":
+			showSensitive := false
+			if request.Payload != nil {
+				showSensitive, _ = request.Payload["show_sensitive"].(bool)
+			}
+			if len(activePlan.Order) == 0 {
+				return state.Response{OK: true, Payload: map[string]any{"values": map[string]string{}}}
+			}
+			return state.Response{OK: true, Payload: map[string]any{"values": activeEnvironments[activePlan.Order[0]].Map(showSensitive)}}
+		default:
+			return state.Response{Status: 404, Error: "unknown control operation"}
 		}
-		return state.Response{OK: request.Operation == "stop" || request.Operation == "status", Payload: map[string]any{"session_id": id.SessionID}}
 	})
 	if controlErr != nil {
 		_ = stateStore.Release()
@@ -129,7 +154,7 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	}
 	if err := stateStore.WriteLive(state.LiveState{
 		SessionID: id.SessionID, Worktree: id.WorktreeRoot, Profile: profileName,
-		ControlPath: control.Path(), StartedAt: startedAt, Ports: portValues,
+		ControlPath: control.Path(), ControlToken: control.Token(), StartedAt: startedAt, Ports: portValues,
 	}); err != nil {
 		return err
 	}
@@ -185,6 +210,10 @@ func Run(ctx context.Context, options Options) (runErr error) {
 			return resolveErr
 		}
 		environments[name] = values
+	}
+	activePlan = resolvedPlan
+	for name, values := range environments {
+		activeEnvironments[name] = values
 	}
 	exportPaths := make(map[string]string, len(cfg.Session.Exports))
 	for shell, path := range cfg.Session.Exports {

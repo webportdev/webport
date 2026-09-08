@@ -38,6 +38,7 @@ type LiveState struct {
 	Worktree      string                  `json:"worktree"`
 	Profile       string                  `json:"profile"`
 	ControlPath   string                  `json:"control_path,omitempty"`
+	ControlToken  string                  `json:"control_token,omitempty"`
 	StartedAt     time.Time               `json:"started_at"`
 	Ports         map[string]int          `json:"ports,omitempty"`
 	Services      map[string]ServiceState `json:"services,omitempty"`
