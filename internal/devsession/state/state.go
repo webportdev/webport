@@ -174,13 +174,13 @@ func (s *Store) RemoveLive() error {
 	return nil
 }
 
-func (s Store) WriteLast(value LastSession) error {
+func (s *Store) WriteLast(value LastSession) error {
 	value.SchemaVersion = 1
 	return writeJSONAtomic(s.LastPath, value)
 }
 
-func (s Store) ReadLive() (LiveState, error)   { return readJSON[LiveState](s.LivePath) }
-func (s Store) ReadLast() (LastSession, error) { return readJSON[LastSession](s.LastPath) }
+func (s *Store) ReadLive() (LiveState, error)   { return readJSON[LiveState](s.LivePath) }
+func (s *Store) ReadLast() (LastSession, error) { return readJSON[LastSession](s.LastPath) }
 
 type lockedError struct{ Path string }
 

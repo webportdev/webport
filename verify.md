@@ -5,8 +5,10 @@
 ```bash
 GOCACHE=/tmp/webport-test-cache go test -race ./...
 GOCACHE=/tmp/webport-vet-cache go vet ./...
-./scripts/install_test.sh
-./scripts/install_macos_test.sh
+
+# Installation suites are needed when installer/service assets change.
+# ./scripts/install_test.sh
+# ./scripts/install_macos_test.sh
 ```
 
 Also verify supported builds:
@@ -101,3 +103,28 @@ sudo systemctl restart webport-stack.target
 - [ ] `webport --help`, all subcommand help, and every `version` command work
   without daemon environment configuration.
 
+## Configuration-driven development sessions
+
+From two separate temporary Git worktrees, create a `.webport.yaml` with a
+default profile, one-shot setup service, long-running backend/frontend
+services, named ports, route exports, generated project secret, exports, and
+plain file logs. Then verify:
+
+- [ ] `webport dev check` validates the plan without starting a child.
+- [ ] `webport dev config --format json` is deterministic and redacted.
+- [ ] Two worktrees run concurrently with distinct scopes, locks, ports,
+  routes, logs, exports, and project-secret stores.
+- [ ] `webport dev status --format json` exposes operational facts but no
+  control token or generated secret.
+- [ ] `webport dev env` redacts sensitive values by default and
+  `--show-sensitive` is required for an interactive reveal.
+- [ ] `webport dev logs SERVICE` reads plain output and `--follow` continues
+  across bounded log rotation.
+- [ ] `webport dev exec SERVICE -- COMMAND` uses the service directory and
+  resolved environment without entering a container implicitly.
+- [ ] `webport dev stop` performs graceful, bounded shutdown and removes live
+  state/exports while retaining logs and the redacted final record.
+- [ ] `webport dev clean --secrets` removes project-lifetime secrets only
+  after the session is inactive.
+- [ ] Existing `webport dev -- COMMAND` behavior is unchanged with or without
+  a configuration file.

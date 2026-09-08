@@ -50,6 +50,10 @@ func writeHelp(out io.Writer) error {
 
 Usage:
   webport install [options]
+  webport dev [options] [SERVICE]
+  webport dev check|config|status|env|logs|stop [options]
+  webport dev exec SERVICE -- COMMAND [ARG...]
+  webport dev clean --secrets [options]
   webport dev [options] -- COMMAND [ARG...]
   webport route --port PORT [options]
   webport list
@@ -62,6 +66,9 @@ Usage:
 
 The local-first install uses webport.localhost and a private local CA.
 Run "webport dev -- npm run dev" from a Git checkout to publish a server.
+Run "webport dev" in a checkout with .webport.yaml to use a configured
+foreground session. Use "webport dev status" or "webport dev logs --follow"
+from another terminal while it runs.
 `)
 	return err
 }
@@ -171,13 +178,16 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	if err := flags.Parse(flagArgs); err != nil {
 		return err
 	}
-	if format != "" && format != "json" && format != "env" {
-		return errors.New("--format must be json or env")
-	}
 	if separator < 0 {
 		positional := flags.Args()
 		if len(positional) > 0 && isDevInspectionOperation(positional[0]) {
-			operationArgs := append([]string(nil), positional[1:]...)
+			operationArgs, err := parseDevOperationArgs(positional[1:], &configPath, &profile, &values.api, &format, &shell, &showSensitive, &follow, &cleanSecrets)
+			if err != nil {
+				return err
+			}
+			if format != "" && format != "json" && format != "env" {
+				return errors.New("--format must be json or env")
+			}
 			if follow {
 				operationArgs = append(operationArgs, "--follow")
 			}
@@ -207,6 +217,9 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 			ConfigPath: configPath, Profile: profile, Service: service, API: values.api,
 			In: in, Out: out, ErrOut: errOut,
 		})
+	}
+	if format != "" && format != "json" && format != "env" {
+		return errors.New("--format must be json or env")
 	}
 	if separator == len(args)-1 {
 		return errors.New("usage: webport dev [options] -- COMMAND [ARG...]")
@@ -315,6 +328,74 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 		return commandErr
 	}
 	return releaseErr
+}
+
+func parseDevOperationArgs(args []string, configPath, profile, api, format, shell *string, showSensitive, follow, cleanSecrets *bool) ([]string, error) {
+	positional := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		name, value, hasValue := strings.Cut(argument, "=")
+		next := func() (string, error) {
+			if hasValue {
+				return value, nil
+			}
+			if index+1 >= len(args) {
+				return "", fmt.Errorf("option %s requires a value", name)
+			}
+			index++
+			return args[index], nil
+		}
+		switch name {
+		case "--config":
+			resolved, err := next()
+			if err != nil {
+				return nil, err
+			}
+			*configPath = resolved
+		case "--profile":
+			resolved, err := next()
+			if err != nil {
+				return nil, err
+			}
+			*profile = resolved
+		case "--api":
+			resolved, err := next()
+			if err != nil {
+				return nil, err
+			}
+			*api = resolved
+		case "--format":
+			resolved, err := next()
+			if err != nil {
+				return nil, err
+			}
+			*format = resolved
+		case "--shell":
+			resolved, err := next()
+			if err != nil {
+				return nil, err
+			}
+			*shell = resolved
+		case "--show-sensitive":
+			if hasValue {
+				return nil, fmt.Errorf("option %s does not take a value", name)
+			}
+			*showSensitive = true
+		case "--follow":
+			if hasValue {
+				return nil, fmt.Errorf("option %s does not take a value", name)
+			}
+			*follow = true
+		case "--secrets":
+			if hasValue {
+				return nil, fmt.Errorf("option %s does not take a value", name)
+			}
+			*cleanSecrets = true
+		default:
+			positional = append(positional, argument)
+		}
+	}
+	return positional, nil
 }
 
 func isDevInspectionOperation(operation string) bool {

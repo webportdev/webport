@@ -158,10 +158,12 @@ metadata.
 
 Generated values require a positive `length` and exactly one of `sets` or
 `alphabet`. Named sets are `lower`, `upper`, `digit`, `hex`, and `base64url`.
-The default lifetime is `session`; `project` values are stored in a separate
-mode-0600, worktree-scoped secret file and may be removed only by
-`webport dev clean --secrets`. The secret file stores policy metadata, not
-plaintext values in ordinary state. Generation uses `crypto/rand`.
+The default lifetime is `session`; `project` values are stored as plaintext
+plus policy metadata in a separate mode-0600, worktree-scoped secret file and
+may be removed only by `webport dev clean --secrets`. That file is the only
+ordinary persistent artifact containing the generated value; session state,
+exports after shutdown, logs, plans, and summaries do not contain it.
+Generation uses `crypto/rand`.
 
 ### Ports, services, readiness, and shutdown
 
@@ -248,6 +250,51 @@ versioned with `schema_version: 1` and stable field names. Environment output
 uses shell-specific escaping. Live terminal diagnostics may mention a failed
 PID; a retained record never stores reusable PIDs, lease IDs, control tokens,
 or sensitive values. A no-session query has a stable nonzero exit status.
+
+### Runtime state and artifacts
+
+Per-user live state, the worktree lock, the authenticated control socket, and
+the retained last-session record are stored beneath
+`$XDG_RUNTIME_DIR/webport` when that variable is available; otherwise Webport
+uses the operating system user-cache directory under `webport/runtime`.
+Filenames are keyed by a digest of the canonical worktree root. The live file
+is removed after orderly shutdown, while the redacted last-session record is
+replaced according to `session.retain_last_summary`.
+
+Logs, exports, and project secrets are relative to the primary configuration
+directory unless an absolute path is explicitly configured. Logs and exports
+are mode `0600`; log files may remain after shutdown, exports are removed, and
+project secrets remain only until `webport dev clean --secrets`. Webport does
+not provide detached sessions, infer state from Docker/Podman/Compose, capture
+arbitrary runtime-assigned ports, perform continuous health checks, scrub
+arbitrary child output for secrets, or clean up after SIGKILL or power loss.
+
+### Generic runtime examples
+
+Webport supervises generic commands; runtime-specific lifecycle remains in
+project-owned scripts. Attached runtimes can be used directly:
+
+```bash
+webport dev -- docker compose up
+webport dev -- podman compose up
+webport dev -- docker compose up --abort-on-container-exit
+```
+
+For a detached runtime, start it explicitly and make the configured command a
+project-owned wait/monitor script. This keeps Webport's foreground ownership
+and timeout separate from the runtime's own lifecycle:
+
+```bash
+docker compose up -d
+webport dev -- ./scripts/wait-for-dev-stack
+```
+
+From another terminal, inspect or follow the configured plain log mirror:
+
+```bash
+webport dev status --format json
+webport dev logs backend --follow
+```
 
 ## Deferred from version 1
 

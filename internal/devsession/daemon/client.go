@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -171,6 +172,7 @@ type LeaseManager struct {
 	interval time.Duration
 	mu       struct {
 		// The manager's lease is replaced atomically after recovery.
+		sync.Mutex
 		lease Lease
 		ok    bool
 	}
@@ -204,7 +206,9 @@ func (m *LeaseManager) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	m.mu.Lock()
 	m.mu.lease, m.mu.ok = lease, true
+	m.mu.Unlock()
 	return nil
 }
 
@@ -224,10 +228,14 @@ func (m *LeaseManager) Run(ctx context.Context) error {
 }
 
 func (m *LeaseManager) heartbeat(ctx context.Context) error {
+	m.mu.Lock()
 	if !m.mu.ok {
+		m.mu.Unlock()
 		return errors.New("lease has not been started")
 	}
-	lease, err := m.client.Heartbeat(ctx, m.mu.lease.ID, m.request.TTL)
+	leaseID := m.mu.lease.ID
+	m.mu.Unlock()
+	lease, err := m.client.Heartbeat(ctx, leaseID, m.request.TTL)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) || strings.Contains(err.Error(), ErrNotFound.Error()) {
 			lease, err = m.client.Register(ctx, m.request)
@@ -236,21 +244,32 @@ func (m *LeaseManager) heartbeat(ctx context.Context) error {
 			return err
 		}
 	}
+	m.mu.Lock()
+	if !m.mu.ok {
+		m.mu.Unlock()
+		_ = m.client.Release(context.Background(), lease.ID)
+		return context.Canceled
+	}
 	m.mu.lease = lease
-	m.mu.ok = true
+	m.mu.Unlock()
 	return nil
 }
 
 func (m *LeaseManager) Stop(ctx context.Context) error {
+	m.mu.Lock()
 	if !m.mu.ok {
+		m.mu.Unlock()
 		return nil
 	}
 	leaseID := m.mu.lease.ID
 	m.mu.ok = false
+	m.mu.Unlock()
 	return m.client.Release(ctx, leaseID)
 }
 
 func (m *LeaseManager) Route() (Route, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if !m.mu.ok {
 		return Route{}, false
 	}

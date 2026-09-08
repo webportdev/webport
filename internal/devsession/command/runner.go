@@ -79,19 +79,32 @@ func (Runner) Start(ctx context.Context, spec Spec) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("create stdout pipe: %w", err)
 	}
-	stderr, err := cmd.StderrPipe()
+	stderr, stderrWriter, err := os.Pipe()
 	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		return nil, fmt.Errorf("create stderr pipe: %w", err)
 	}
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
 	configureProcess(cmd)
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		return nil, fmt.Errorf("start command: %w", err)
 	}
+	// The child owns the duplicated write ends. Closing the parent's copies
+	// leaves the readers responsible for draining all buffered output without
+	// relying on os/exec's StdoutPipe/Wait close ordering.
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
 	process := &Process{command: cmd, done: make(chan struct{}), started: started, result: Result{PID: cmd.Process.Pid, StartTime: started}}
 	var output sync.WaitGroup
 	output.Add(2)

@@ -1,0 +1,49 @@
+version: 1
+project: example-app
+branch: main
+
+session:
+  retain_last_summary: true
+  exports:
+    bash: .webport/session.env
+    json: .webport/session.json
+
+ports:
+  backend: {first_free: 4000}
+  frontend: {first_free: 4100}
+
+env:
+  SESSION_SECRET:
+    sensitive: true
+    generate: {lifetime: project, length: 32, sets: [lower, upper, digit]}
+
+profiles:
+  default: {services: [frontend]}
+
+services:
+  setup:
+    command: [./scripts/dev-setup]
+    completion: exit
+    logs: {destination: directory, path: .webport/logs}
+
+  backend:
+    depends_on: [setup]
+    command: [./scripts/dev-backend]
+    env:
+      PORT: "${ports.backend}"
+    route:
+      port: backend
+      optional: true
+      export: {url: BACKEND_URL}
+    logs: {destination: directory, path: .webport/logs}
+
+  frontend:
+    depends_on: [backend]
+    command: [./scripts/dev-frontend]
+    env:
+      PORT: "${ports.frontend}"
+      API_URL: "${env.BACKEND_URL}"
+    route:
+      port: frontend
+      optional: true
+    logs: {destination: directory, path: .webport/logs}

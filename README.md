@@ -81,6 +81,35 @@ Common route options:
 | `--ttl` | `30s` |
 | `--api` | `http://127.0.0.1:8080` |
 
+## Configuration-driven sessions
+
+Commit a `.webport.yaml` to make `webport dev` resolve a complete foreground
+session: named ports, generated values, environment precedence, dependencies,
+readiness, route leases, logs, exports, and shutdown behavior. A reviewed
+starter is available at [examples/webport.yaml](examples/webport.yaml), and
+the complete v1 contract is in
+[docs/configuration-driven-development-sessions.md](docs/configuration-driven-development-sessions.md).
+
+```bash
+webport dev                              # run the default profile
+webport dev frontend                     # run one service and its dependencies
+webport dev check                        # validate without starting commands
+webport dev config --format json         # print the redacted resolved plan
+webport dev status --format json         # inspect live or retained state
+webport dev env --shell fish             # render the live environment
+webport dev logs backend --follow        # follow a configured plain log
+webport dev exec backend -- go test ./... # run a one-off command in the service context
+webport dev stop                         # request graceful foreground shutdown
+webport dev clean --secrets              # explicitly remove project secrets
+```
+
+Configured sessions are foreground-owned and do not detach. `--` always
+selects the original wrapper path, so `webport dev -- npm run dev` remains
+valid even when a configuration file is present. Status/config output is
+redacted by default; project-lifetime generated values live only in a
+mode-`0600` worktree secret store and are never written to Webport logs or
+retained session metadata.
+
 ## Public domains
 
 Public ACME/DNS-01 is an advanced installation path. Create a provider token

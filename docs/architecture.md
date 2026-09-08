@@ -7,11 +7,22 @@
 - `webport dev` runs in the developer's user session. It supervises one
   process tree, discovers its listener without elevated privileges, and owns a
   renewable route lease.
+- A configured `webport dev` session resolves a worktree-scoped plan before
+  launching commands, then owns the dependency graph, environment, ports,
+  readiness checks, route leases, logs, exports, authenticated control socket,
+  and graceful shutdown in the foreground process.
 - Traefik owns ports 80/443, public ACME state, and HTTPS proxying.
 - `webport dns` performs explicit persistent wildcard A/AAAA administration.
 
 The system has no persistent route database. Configuration and certificate
 state are persistent; active routes are reconstructed by clients.
+
+Configured-session runtime state is also intentionally ephemeral: a per-user
+worktree lock, live state file, and local control socket exist only while the
+foreground session runs. A redacted last-session record may remain for
+inspection. Project-lifetime generated secrets are kept separately in the
+configuration worktree with mode `0600`; they are not copied into session
+state, logs, exports after shutdown, or summaries.
 
 ## Route transaction
 
@@ -75,4 +86,3 @@ mode-`0600` environment file and never enter generated dynamic YAML.
 - Publication failure: the candidate state is rolled back and readiness fails.
 - Machine reboot: services start empty and active developer clients recreate
   routes when they resume.
-

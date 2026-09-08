@@ -80,3 +80,18 @@ func TestWithEnvironmentReplacesExistingValuesAndPreservesOtherArguments(t *test
 		t.Fatalf("environment = %v", got)
 	}
 }
+
+func TestParseDevOperationArgsAcceptsOptionsAfterOperation(t *testing.T) {
+	var configPath, profile, api, format, shell string
+	var showSensitive, follow, cleanSecrets bool
+	positional, err := parseDevOperationArgs(
+		[]string{"--format", "json", "--shell=fish", "--config", "session.yaml", "--profile", "ci", "--api", "http://session", "--show-sensitive", "--follow", "--secrets", "backend"},
+		&configPath, &profile, &api, &format, &shell, &showSensitive, &follow, &cleanSecrets,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(positional) != 1 || positional[0] != "backend" || configPath != "session.yaml" || profile != "ci" || api != "http://session" || format != "json" || shell != "fish" || !showSensitive || !follow || !cleanSecrets {
+		t.Fatalf("parsed operation arguments = %q, %q, %q, %q, %q, %q, %t, %t, %t", positional, configPath, profile, api, format, shell, showSensitive, follow, cleanSecrets)
+	}
+}

@@ -3,6 +3,7 @@ package routes
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 )
 
 type fakeClient struct {
+	mu         sync.Mutex
 	registers  []daemon.RouteRequest
 	releases   []string
 	err        error
@@ -21,6 +23,8 @@ func (f *fakeClient) Config(context.Context) (daemon.Config, error) {
 	return daemon.Config{BaseDomain: "test"}, nil
 }
 func (f *fakeClient) Register(_ context.Context, request daemon.RouteRequest) (daemon.Lease, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.registers = append(f.registers, request)
 	if f.err != nil {
 		return daemon.Lease{}, f.err
@@ -28,6 +32,8 @@ func (f *fakeClient) Register(_ context.Context, request daemon.RouteRequest) (d
 	return daemon.Lease{ID: request.ClientID + "-lease", Route: daemon.Route{Project: request.Project, Branch: request.Branch, Port: request.Port}}, nil
 }
 func (f *fakeClient) Heartbeat(context.Context, string, time.Duration) (daemon.Lease, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.heartbeats++
 	if f.heartbeats == 1 {
 		return daemon.Lease{}, daemon.ErrNotFound
@@ -35,8 +41,22 @@ func (f *fakeClient) Heartbeat(context.Context, string, time.Duration) (daemon.L
 	return daemon.Lease{ID: "recovered", Route: daemon.Route{Port: 3000}}, nil
 }
 func (f *fakeClient) Release(_ context.Context, lease string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.releases = append(f.releases, lease)
 	return nil
+}
+
+func (f *fakeClient) registerCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.registers)
+}
+
+func (f *fakeClient) releaseCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.releases)
 }
 
 func TestManagerActivatesIndependentRoutesAndReleasesThem(t *testing.T) {
@@ -50,13 +70,13 @@ func TestManagerActivatesIndependentRoutesAndReleasesThem(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(client.registers) != 2 || client.registers[0].ClientID == client.registers[1].ClientID {
+	if client.registerCount() != 2 || client.registers[0].ClientID == client.registers[1].ClientID {
 		t.Fatalf("registers = %+v", client.registers)
 	}
 	if err := manager.ReleaseAll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(client.releases) != 2 {
+	if client.releaseCount() != 2 {
 		t.Fatalf("releases = %v", client.releases)
 	}
 	for name, entry := range manager.Snapshot() {
@@ -93,11 +113,11 @@ func TestManagerHeartbeatRecoversAfterDaemonRouteLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) && len(client.registers) < 2 {
+	for time.Now().Before(deadline) && client.registerCount() < 2 {
 		time.Sleep(time.Millisecond)
 	}
-	if len(client.registers) != 2 || manager.Snapshot()["api"].State != Active {
-		t.Fatalf("recovery registers=%d state=%+v", len(client.registers), manager.Snapshot()["api"])
+	if client.registerCount() != 2 || manager.Snapshot()["api"].State != Active {
+		t.Fatalf("recovery registers=%d state=%+v", client.registerCount(), manager.Snapshot()["api"])
 	}
 	_ = manager.ReleaseAll(context.Background())
 }
