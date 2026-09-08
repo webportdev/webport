@@ -135,6 +135,9 @@ func runDev(args []string) error {
 }
 
 func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
+	if len(args) > 0 && args[0] == "exec" {
+		return runDevExec(args[1:], in, out, errOut)
+	}
 	separator := -1
 	for index, arg := range args {
 		if arg == "--" {
@@ -150,6 +153,8 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	var configPath, profile string
 	var showSensitive bool
 	var shell string
+	var follow bool
+	var cleanSecrets bool
 	addRouteFlags(flags, &values)
 	flags.DurationVar(&startupTimeout, "startup-timeout", 30*time.Second, "time to wait for an HTTP listener")
 	flags.StringVar(&format, "format", "", "resolution output format: json or env")
@@ -157,6 +162,8 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	flags.StringVar(&profile, "profile", "", "development session profile")
 	flags.BoolVar(&showSensitive, "show-sensitive", false, "show sensitive values in interactive inspection output")
 	flags.StringVar(&shell, "shell", "bash", "environment output shell: bash, fish, or json")
+	flags.BoolVar(&follow, "follow", false, "follow development session logs")
+	flags.BoolVar(&cleanSecrets, "secrets", false, "remove project-lifetime generated secrets")
 	flagArgs := args
 	if separator >= 0 {
 		flagArgs = args[:separator]
@@ -170,7 +177,14 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	if separator < 0 {
 		positional := flags.Args()
 		if len(positional) > 0 && isDevInspectionOperation(positional[0]) {
-			return runDevInspection(positional[0], configPath, profile, values.api, shell, format, showSensitive, in, out)
+			operationArgs := append([]string(nil), positional[1:]...)
+			if follow {
+				operationArgs = append(operationArgs, "--follow")
+			}
+			if cleanSecrets {
+				operationArgs = append(operationArgs, "--secrets")
+			}
+			return runDevInspection(positional[0], operationArgs, configPath, profile, values.api, shell, format, showSensitive, in, out, errOut)
 		}
 		if format != "" {
 			if err := values.inferIdentity(); err != nil {
@@ -305,14 +319,14 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 
 func isDevInspectionOperation(operation string) bool {
 	switch operation {
-	case "check", "config", "status", "env", "stop":
+	case "check", "config", "status", "env", "stop", "logs", "clean":
 		return true
 	default:
 		return false
 	}
 }
 
-func runDevInspection(operation, configPath, profile, api, shell, format string, showSensitive bool, in io.Reader, out io.Writer) error {
+func runDevInspection(operation string, operationArgs []string, configPath, profile, api, shell, format string, showSensitive bool, in io.Reader, out, errOut io.Writer) error {
 	options := devsession.Options{ConfigPath: configPath, Profile: profile, API: api, In: in, Out: out}
 	switch operation {
 	case "check", "config":
@@ -375,6 +389,9 @@ func runDevInspection(operation, configPath, profile, api, shell, format string,
 		_, err = io.WriteString(out, rendered)
 		return err
 	case "stop":
+		if len(operationArgs) > 0 {
+			return errors.New("webport dev stop accepts no arguments")
+		}
 		response, err := devsession.Control(context.Background(), options, "stop", nil)
 		if err != nil {
 			return err
@@ -384,9 +401,73 @@ func runDevInspection(operation, configPath, profile, api, shell, format string,
 		}
 		_, err = fmt.Fprintln(out, "development session stop requested")
 		return err
+	case "logs":
+		service := ""
+		follow := false
+		for _, argument := range operationArgs {
+			if argument == "--follow" {
+				follow = true
+				continue
+			}
+			if strings.HasPrefix(argument, "-") {
+				return fmt.Errorf("unknown logs option %q", argument)
+			}
+			if service != "" {
+				return errors.New("webport dev logs accepts at most one service name")
+			}
+			service = argument
+		}
+		logContext, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		return devsession.StreamLogs(logContext, options, service, follow, out)
+	case "clean":
+		secrets := false
+		for _, argument := range operationArgs {
+			if argument == "--secrets" {
+				secrets = true
+				continue
+			}
+			return fmt.Errorf("unknown clean option %q", argument)
+		}
+		if !secrets {
+			return errors.New("webport dev clean currently requires --secrets")
+		}
+		if err := devsession.CleanSecrets(options); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintln(out, "development session secrets cleaned")
+		return err
 	default:
 		return fmt.Errorf("unsupported development session operation %q", operation)
 	}
+}
+
+func runDevExec(args []string, in io.Reader, out, errOut io.Writer) error {
+	separator := -1
+	for index, argument := range args {
+		if argument == "--" {
+			separator = index
+			break
+		}
+	}
+	if separator < 1 || separator == len(args)-1 {
+		return errors.New("usage: webport dev exec SERVICE -- COMMAND [ARG...]")
+	}
+	flags := flag.NewFlagSet("webport dev exec", flag.ContinueOnError)
+	flags.SetOutput(errOut)
+	var configPath, profile, api string
+	flags.StringVar(&configPath, "config", "", "development session configuration path")
+	flags.StringVar(&profile, "profile", "", "development session profile")
+	flags.StringVar(&api, "api", defaultAPI, "webport API URL")
+	if err := flags.Parse(args[:separator]); err != nil {
+		return err
+	}
+	if len(flags.Args()) != 1 {
+		return errors.New("webport dev exec requires one service name")
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	return devsession.Exec(ctx, devsession.Options{ConfigPath: configPath, Profile: profile, API: api, In: in, Out: out, ErrOut: errOut}, flags.Args()[0], args[separator+1:], in, out, errOut)
 }
 
 type wrapperResolution struct {

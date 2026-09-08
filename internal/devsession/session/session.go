@@ -101,6 +101,16 @@ func Run(ctx context.Context, options Options) (runErr error) {
 				return state.Response{OK: true, Payload: map[string]any{"values": map[string]string{}}}
 			}
 			return state.Response{OK: true, Payload: map[string]any{"values": activeEnvironments[activePlan.Order[0]].Map(showSensitive)}}
+		case "exec-info":
+			serviceName := ""
+			if request.Payload != nil {
+				serviceName, _ = request.Payload["service"].(string)
+			}
+			service, ok := activePlan.Services[serviceName]
+			if !ok {
+				return state.Response{Status: 404, Error: "unknown service"}
+			}
+			return state.Response{OK: true, Payload: map[string]any{"working_dir": service.WorkingDir, "environment": activeEnvironments[serviceName].Map(true)}}
 		default:
 			return state.Response{Status: 404, Error: "unknown control operation"}
 		}
@@ -117,6 +127,7 @@ func Run(ctx context.Context, options Options) (runErr error) {
 		_ = control.Close()
 		_ = stateStore.RemoveLive()
 		last := state.LastSession{SessionID: id.SessionID, Worktree: id.WorktreeRoot, Profile: profileName, StartedAt: startedAt, StoppedAt: time.Now()}
+		last.LogPaths = liveState.LogPaths
 		if runErr != nil {
 			last.Initiating = runErr.Error()
 		}
@@ -152,10 +163,11 @@ func Run(ctx context.Context, options Options) (runErr error) {
 			portValues[name] = allocation.Port
 		}
 	}
-	if err := stateStore.WriteLive(state.LiveState{
+	liveState = state.LiveState{
 		SessionID: id.SessionID, Worktree: id.WorktreeRoot, Profile: profileName,
 		ControlPath: control.Path(), ControlToken: control.Token(), StartedAt: startedAt, Ports: portValues,
-	}); err != nil {
+	}
+	if err := stateStore.WriteLive(liveState); err != nil {
 		return err
 	}
 
@@ -233,6 +245,7 @@ func Run(ctx context.Context, options Options) (runErr error) {
 			return err
 		}
 	}
+	liveState.Exports = exportPaths
 	fmt.Fprint(options.Out, resolvedPlan.Human())
 	logManager, err := logs.New(id.ConfigDirectory, options.Out, false)
 	if err != nil {
@@ -247,6 +260,8 @@ func Run(ctx context.Context, options Options) (runErr error) {
 		}
 		sinks[name] = sink
 	}
+	liveState.LogPaths = logManager.Paths()
+	_ = stateStore.WriteLive(liveState)
 	runtime := env.Runtime{Project: id.Project, Branch: id.Branch, Scope: id.Scope, Ports: portValues, Routes: routes}
 	if len(resolvedPlan.Order) > 1 {
 		var routeManager *routeleases.Manager
