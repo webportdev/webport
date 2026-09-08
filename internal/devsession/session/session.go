@@ -9,7 +9,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 	"github.com/webportdev/webport/internal/devsession/env"
 	"github.com/webportdev/webport/internal/devsession/exports"
 	"github.com/webportdev/webport/internal/devsession/identity"
+	"github.com/webportdev/webport/internal/devsession/logs"
 	"github.com/webportdev/webport/internal/devsession/plan"
 	"github.com/webportdev/webport/internal/devsession/ports"
 	"github.com/webportdev/webport/internal/devsession/readiness"
@@ -205,6 +205,19 @@ func Run(ctx context.Context, options Options) (runErr error) {
 		}
 	}
 	fmt.Fprint(options.Out, resolvedPlan.Human())
+	logManager, err := logs.New(id.ConfigDirectory, options.Out, false)
+	if err != nil {
+		return err
+	}
+	defer logManager.Close()
+	sinks := make(map[string]command.OutputSink, len(resolvedPlan.Order))
+	for _, name := range resolvedPlan.Order {
+		sink, sinkErr := logManager.Sink(name, resolvedPlan.Services[name].Logs)
+		if sinkErr != nil {
+			return sinkErr
+		}
+		sinks[name] = sink
+	}
 	runtime := env.Runtime{Project: id.Project, Branch: id.Branch, Scope: id.Scope, Ports: portValues, Routes: routes}
 	if len(resolvedPlan.Order) > 1 {
 		var routeManager *routeleases.Manager
@@ -225,6 +238,7 @@ func Run(ctx context.Context, options Options) (runErr error) {
 		result, runErr := supervisor.Run(ctx, resolvedPlan, supervisor.Options{
 			Environments: environments, Runtime: runtime, Out: options.Out, ErrOut: options.ErrOut,
 			RouteManager: routeManager, RoutePlans: resolvedPlan.Routes.Routes,
+			SinkFactory: func(name string) command.OutputSink { return sinks[name] },
 		})
 		if runErr != nil {
 			return runErr
@@ -243,11 +257,7 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("service %q command: %w", serviceName, err)
 	}
-	sink, closeLogs, err := newOutputSink(serviceName, service.Logs, id, options.Out)
-	if err != nil {
-		return err
-	}
-	defer closeLogs()
+	sink := sinks[serviceName]
 	process, err := (command.Runner{}).Start(ctx, command.Spec{
 		Command: commandValues, Shell: shellValue, Dir: service.WorkingDir,
 		Env: sessionEnvironment(values, id, routes, serviceName), Sink: sink,
@@ -444,61 +454,4 @@ func shutdownGrace(service plan.Service) time.Duration {
 		return service.Shutdown.GracePeriod.Duration()
 	}
 	return 5 * time.Second
-}
-
-type outputSink struct {
-	mu      sync.Mutex
-	service string
-	out     io.Writer
-	files   map[string]*os.File
-}
-
-func newOutputSink(service string, logs *config.Logs, id identity.Identity, out io.Writer) (*outputSink, func(), error) {
-	sink := &outputSink{service: service, out: out, files: make(map[string]*os.File)}
-	if logs == nil || logs.Destination == "none" || logs.Path == "" {
-		return sink, func() {}, nil
-	}
-	path, err := id.ResolvePath(logs.Path)
-	if err != nil {
-		return nil, nil, err
-	}
-	flags := os.O_CREATE | os.O_WRONLY
-	if logs.Mode == "append" {
-		flags |= os.O_APPEND
-	} else {
-		flags |= os.O_TRUNC
-	}
-	if err := os.MkdirAll(filepathDir(path), 0o700); err != nil {
-		return nil, nil, err
-	}
-	file, err := os.OpenFile(path, flags, 0o600)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open log file: %w", err)
-	}
-	sink.files["combined"] = file
-	return sink, func() {
-		for _, file := range sink.files {
-			_ = file.Close()
-		}
-	}, nil
-}
-
-func (s *outputSink) WriteOutput(event command.OutputEvent) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if file := s.files["combined"]; file != nil {
-		_, _ = file.Write(event.Raw)
-	}
-	if event.Complete {
-		fmt.Fprintf(s.out, "[%s] %s\n", s.service, event.Line)
-	} else {
-		fmt.Fprintf(s.out, "[%s] %s", s.service, event.Line)
-	}
-}
-
-func filepathDir(path string) string {
-	if index := strings.LastIndexAny(path, "/\\"); index >= 0 {
-		return path[:index]
-	}
-	return "."
 }

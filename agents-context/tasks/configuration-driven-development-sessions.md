@@ -29,7 +29,8 @@ resume without reconstructing completed work from the repository diff.
 | 16 | complete | Added independent route lease management under `internal/devsession/routes`, distinct lease client IDs, readiness-gated activation, optional/required route handling, heartbeat recovery/failure state, and supervisor release-before-shutdown integration. Focused tests pass. |
 | 17 | complete | Added per-user worktree-keyed locking, atomic live/last state, stale-state/PID-start-time defense, and authenticated local control transport under `internal/devsession/state`; configured sessions now own the lock/control lifecycle and retain only redacted final metadata. Focused tests pass. |
 | 18 | complete | Added atomic environment exports under `internal/devsession/exports` for Bash/POSIX/Zsh, Fish, and JSON with mode-0600 permissions and cleanup; configured sessions now write/remove exports after final environment resolution and honor last-summary retention. Focused tests pass. |
-| 19–22 | pending | Not started. |
+| 19 | complete | Added `internal/devsession/logs` for prefixed/color terminal output, raw combined/separate mirrors, append/truncate, bounded tails, rotation, mode-0600 files, and config-root path enforcement; configured sessions now use it for single and concurrent services. Focused tests pass. |
+| 20–22 | pending | Not started. |
 
 ## Target outcome
 
