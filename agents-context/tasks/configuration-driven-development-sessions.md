@@ -18,7 +18,8 @@ resume without reconstructing completed work from the repository diff.
 | 5 | complete | Added route pre-resolution in `internal/devsession/plan`: daemon `/config` model, checked hostname generation, raw identity/hostname collision checks, optional-route degradation, export alias/recipient validation, and deterministic JSON/env renderings. Focused tests pass. |
 | 6 | complete | Upgraded the zero-config wrapper with pre-launch `WEBPORT_PROJECT`, `WEBPORT_BRANCH`, `WEBPORT_ROUTE`, `WEBPORT_HOST`, and `WEBPORT_URL`, deterministic `--format json|env` resolution, inherited-value replacement, and regression coverage without exposing discovery tokens. |
 | 7 | complete | Added sensitivity-aware environment composition under `internal/devsession/env`: explicit dotenv parsing, exact precedence, dependency-graph interpolation, route aliases, shell/JSON/human renderers, and sensitive argv/shell interpolation rejection. Focused tests pass. |
-| 8–22 | pending | Not started. |
+| 8 | complete | Added generated-value and project-secret lifecycle under `internal/devsession/secrets`: secure policy generation, session/project lifetime handling, atomic user-only storage with policy metadata, explicit clean, and redaction metadata. Focused tests pass. |
+| 9–22 | pending | Not started. |
 
 ## Target outcome
 
