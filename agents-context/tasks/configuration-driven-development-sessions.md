@@ -19,7 +19,8 @@ resume without reconstructing completed work from the repository diff.
 | 6 | complete | Upgraded the zero-config wrapper with pre-launch `WEBPORT_PROJECT`, `WEBPORT_BRANCH`, `WEBPORT_ROUTE`, `WEBPORT_HOST`, and `WEBPORT_URL`, deterministic `--format json|env` resolution, inherited-value replacement, and regression coverage without exposing discovery tokens. |
 | 7 | complete | Added sensitivity-aware environment composition under `internal/devsession/env`: explicit dotenv parsing, exact precedence, dependency-graph interpolation, route aliases, shell/JSON/human renderers, and sensitive argv/shell interpolation rejection. Focused tests pass. |
 | 8 | complete | Added generated-value and project-secret lifecycle under `internal/devsession/secrets`: secure policy generation, session/project lifetime handling, atomic user-only storage with policy metadata, explicit clean, and redaction metadata. Focused tests pass. |
-| 9–22 | pending | Not started. |
+| 9 | complete | Added named-port allocation under `internal/devsession/ports`: fixed/first-free/random/discovered modes, loopback probing seams, deterministic ownership/uniqueness, bounded retry diagnostics, and discovered-port pre-start validation. Focused tests pass. |
+| 10–22 | pending | Not started. |
 
 ## Target outcome
 
