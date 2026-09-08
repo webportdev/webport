@@ -27,7 +27,8 @@ resume without reconstructing completed work from the repository diff.
 | 14 | complete | Added `internal/devsession/supervisor` dependency-aware concurrent startup and connected multi-service configured sessions to it. Independent branches run concurrently, exit tasks run once, dependency failures block dependents, and cancellation is leak-safe in focused tests. |
 | 15 | complete | Centralized foreground supervisor ownership and rollback: process cancellation, required-process failure semantics, shutdown registration after successful starts, reverse dependency cleanup, bounded cleanup commands, and initiating-error preservation. Focused lifecycle tests pass. |
 | 16 | complete | Added independent route lease management under `internal/devsession/routes`, distinct lease client IDs, readiness-gated activation, optional/required route handling, heartbeat recovery/failure state, and supervisor release-before-shutdown integration. Focused tests pass. |
-| 17–22 | pending | Not started. |
+| 17 | complete | Added per-user worktree-keyed locking, atomic live/last state, stale-state/PID-start-time defense, and authenticated local control transport under `internal/devsession/state`; configured sessions now own the lock/control lifecycle and retain only redacted final metadata. Focused tests pass. |
+| 18–22 | pending | Not started. |
 
 ## Target outcome
 

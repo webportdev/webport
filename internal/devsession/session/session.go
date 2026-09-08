@@ -23,6 +23,7 @@ import (
 	"github.com/webportdev/webport/internal/devsession/readiness"
 	routeleases "github.com/webportdev/webport/internal/devsession/routes"
 	"github.com/webportdev/webport/internal/devsession/secrets"
+	"github.com/webportdev/webport/internal/devsession/state"
 	"github.com/webportdev/webport/internal/devsession/supervisor"
 )
 
@@ -37,7 +38,7 @@ type Options struct {
 	ErrOut     io.Writer
 }
 
-func Run(ctx context.Context, options Options) error {
+func Run(ctx context.Context, options Options) (runErr error) {
 	if options.In == nil {
 		options.In = os.Stdin
 	}
@@ -62,6 +63,40 @@ func Run(ctx context.Context, options Options) error {
 	if profileName == "" && options.Service == "" {
 		profileName = "default"
 	}
+	stateStore, err := state.NewStore(id.WorktreeRoot, "")
+	if err != nil {
+		return err
+	}
+	if err := stateStore.Acquire(); err != nil {
+		return err
+	}
+	startedAt := time.Now()
+	controlPath := strings.TrimSuffix(stateStore.LivePath, ".live.json") + ".sock"
+	var cancelSession context.CancelFunc
+	control, controlErr := state.StartControl(controlPath, func(_ context.Context, request state.Request) state.Response {
+		if request.Operation == "stop" && cancelSession != nil {
+			cancelSession()
+		}
+		return state.Response{OK: request.Operation == "stop" || request.Operation == "status", Payload: map[string]any{"session_id": id.SessionID}}
+	})
+	if controlErr != nil {
+		_ = stateStore.Release()
+		return controlErr
+	}
+	sessionCtx, cancel := context.WithCancel(ctx)
+	cancelSession = cancel
+	ctx = sessionCtx
+	defer func() {
+		cancel()
+		_ = control.Close()
+		_ = stateStore.RemoveLive()
+		last := state.LastSession{SessionID: id.SessionID, Worktree: id.WorktreeRoot, Profile: profileName, StartedAt: startedAt, StoppedAt: time.Now()}
+		if runErr != nil {
+			last.Initiating = runErr.Error()
+		}
+		_ = stateStore.WriteLast(last)
+		_ = stateStore.Release()
+	}()
 	profileEnv := map[string]config.Value{}
 	if profileName != "" {
 		profile, ok := cfg.Profiles[profileName]
@@ -88,6 +123,12 @@ func Run(ctx context.Context, options Options) error {
 		if !allocation.Discovered {
 			portValues[name] = allocation.Port
 		}
+	}
+	if err := stateStore.WriteLive(state.LiveState{
+		SessionID: id.SessionID, Worktree: id.WorktreeRoot, Profile: profileName,
+		ControlPath: control.Path(), StartedAt: startedAt, Ports: portValues,
+	}); err != nil {
+		return err
 	}
 
 	daemonClient, err := daemon.NewHTTPClient(options.API, nil, nil)
