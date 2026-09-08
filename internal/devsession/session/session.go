@@ -86,7 +86,9 @@ func Run(ctx context.Context, options Options) (runErr error) {
 			}
 			return state.Response{OK: true, Payload: map[string]any{"session_id": id.SessionID}}
 		case "status":
-			return state.Response{OK: true, Payload: map[string]any{"state": liveState}}
+			statusState := liveState
+			statusState.ControlToken = ""
+			return state.Response{OK: true, Payload: map[string]any{"state": statusState}}
 		case "config":
 			encoded, _ := activePlan.JSON()
 			var payload map[string]any
@@ -110,7 +112,14 @@ func Run(ctx context.Context, options Options) (runErr error) {
 			if !ok {
 				return state.Response{Status: 404, Error: "unknown service"}
 			}
-			return state.Response{OK: true, Payload: map[string]any{"working_dir": service.WorkingDir, "environment": activeEnvironments[serviceName].Map(true)}}
+			environment := make(map[string]string)
+			for _, item := range sessionEnvironment(activeEnvironments[serviceName], activePlan.Identity, activePlan.Routes, serviceName) {
+				name, value, found := strings.Cut(item, "=")
+				if found {
+					environment[name] = value
+				}
+			}
+			return state.Response{OK: true, Payload: map[string]any{"working_dir": service.WorkingDir, "environment": environment}}
 		default:
 			return state.Response{Status: 404, Error: "unknown control operation"}
 		}

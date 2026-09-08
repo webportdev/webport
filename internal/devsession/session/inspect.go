@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/webportdev/webport/internal/devsession/config"
@@ -81,6 +82,10 @@ func Status(options Options) (any, error) {
 	}
 	live, liveErr := store.ReadLive()
 	if liveErr == nil {
+		// The control token is an implementation credential, not session
+		// inspection data. Keep it available only to Control, which reads the
+		// live file directly for authenticated dialing.
+		live.ControlToken = ""
 		return live, nil
 	}
 	if !errors.Is(liveErr, os.ErrNotExist) {
@@ -200,6 +205,32 @@ func StreamLogs(ctx context.Context, options Options, service string, follow boo
 	if err != nil {
 		return err
 	}
+	if follow && len(paths) > 1 {
+		followContext, cancel := context.WithCancel(ctx)
+		defer cancel()
+		var wait sync.WaitGroup
+		results := make(chan error, len(paths))
+		locked := &lockedWriter{writer: output}
+		for _, path := range paths {
+			wait.Add(1)
+			go func(path string) {
+				defer wait.Done()
+				err := streamFile(followContext, path, true, locked)
+				if err != nil {
+					cancel()
+				}
+				results <- err
+			}(path)
+		}
+		wait.Wait()
+		close(results)
+		for err := range results {
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	for _, path := range paths {
 		if err := streamFile(ctx, path, follow, output); err != nil {
 			return err
@@ -213,9 +244,25 @@ func streamFile(ctx context.Context, path string, follow bool, output io.Writer)
 	if err != nil {
 		return fmt.Errorf("open log %s: %w", path, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	var offset int64
 	for {
+		if follow {
+			if replacement, statErr := os.Open(path); statErr == nil {
+				currentInfo, currentErr := file.Stat()
+				replacementInfo, replacementErr := replacement.Stat()
+				if currentErr == nil && replacementErr == nil && !os.SameFile(currentInfo, replacementInfo) {
+					_ = file.Close()
+					file = replacement
+					offset = 0
+				} else {
+					_ = replacement.Close()
+				}
+			}
+		}
+		if info, statErr := file.Stat(); statErr == nil && offset > info.Size() {
+			offset = 0
+		}
 		if _, err := file.Seek(offset, io.SeekStart); err != nil {
 			return err
 		}
@@ -235,6 +282,17 @@ func streamFile(ctx context.Context, path string, follow bool, output io.Writer)
 		case <-timer.C:
 		}
 	}
+}
+
+type lockedWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (w *lockedWriter) Write(value []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writer.Write(value)
 }
 
 func ExecInfo(ctx context.Context, options Options, service string) (string, []string, error) {

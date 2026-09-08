@@ -32,7 +32,7 @@ resume without reconstructing completed work from the repository diff.
 | 19 | complete | Added `internal/devsession/logs` for prefixed/color terminal output, raw combined/separate mirrors, append/truncate, bounded tails, rotation, mode-0600 files, and config-root path enforcement; configured sessions now use it for single and concurrent services. Focused tests pass. |
 | 20 | complete | Added configured-session `check`, `config`, `status`, `env`, and `stop` inspection/control paths with stable JSON/human/env rendering, live authenticated supervisor queries, redaction gates, and no-start config planning. Full `go test ./...` passes. |
 | 21 | complete | Added `logs`/`logs --follow`, live-supervisor `exec SERVICE -- COMMAND`, authenticated `stop`, and `clean --secrets` CLI operations; recorded log/export metadata in live and last-session state; added active-session secret-cleanup protection and focused tests. Full `go test ./...` passes. |
-| 22 | pending | End-to-end lifecycle and security fixture coverage remains. |
+| 22 | complete | Added a Docker-free lifecycle/security fixture covering two concurrent worktrees, distinct scopes/ports, dependency startup, route/export injection, four fake-daemon leases, authenticated stop/release, retained logs/state, project-secret persistence, export cleanup, and secret/token scans across terminal/log/status/config/summary artifacts. Added rotated-log follow coverage, bounded stop control, status-token redaction, and complete exec environment injection. Full `go test ./...` passes. |
 
 ## Target outcome
 

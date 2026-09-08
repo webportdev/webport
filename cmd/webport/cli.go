@@ -392,7 +392,9 @@ func runDevInspection(operation string, operationArgs []string, configPath, prof
 		if len(operationArgs) > 0 {
 			return errors.New("webport dev stop accepts no arguments")
 		}
-		response, err := devsession.Control(context.Background(), options, "stop", nil)
+		stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		response, err := devsession.Control(stopContext, options, "stop", nil)
 		if err != nil {
 			return err
 		}
