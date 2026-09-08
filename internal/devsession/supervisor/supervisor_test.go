@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/webportdev/webport/internal/devsession/config"
+	"github.com/webportdev/webport/internal/devsession/daemon"
 	"github.com/webportdev/webport/internal/devsession/env"
 	"github.com/webportdev/webport/internal/devsession/plan"
+	"github.com/webportdev/webport/internal/devsession/routes"
 )
 
 func TestRunDiamondAndSharedExitDependency(t *testing.T) {
@@ -94,6 +96,48 @@ func TestRunExecutesRegisteredShutdownCommandsInReverseOrder(t *testing.T) {
 	if err != nil || string(data) != "dependentresource" {
 		t.Fatalf("cleanup order = %q, %v; states=%+v", data, err, result.States)
 	}
+}
+
+func TestRunActivatesRouteAfterReadinessAndReleasesBeforeReturn(t *testing.T) {
+	client := &routeClientFake{}
+	routeManager, err := routes.NewManager(client, time.Second, 100*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := plan.Service{Name: "frontend", Command: []string{"sh", "-c", "exit 0"}, Completion: "exit"}
+	item := plan.Route{Service: "frontend", Project: "app", Branch: "main", Port: 3000, Available: true}
+	values := mustValues(t, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err = Run(ctx, plan.Plan{Order: []string{"frontend"}, Services: map[string]plan.Service{"frontend": service}, Routes: plan.Routes{Routes: []plan.Route{item}}}, Options{
+		Environments: map[string]env.Values{"frontend": values}, RouteManager: routeManager, RoutePlans: []plan.Route{item},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.registers) != 1 || len(client.releases) != 1 {
+		t.Fatalf("route lifecycle registers=%d releases=%d", len(client.registers), len(client.releases))
+	}
+}
+
+type routeClientFake struct {
+	registers []daemon.RouteRequest
+	releases  []string
+}
+
+func (f *routeClientFake) Config(context.Context) (daemon.Config, error) {
+	return daemon.Config{BaseDomain: "test"}, nil
+}
+func (f *routeClientFake) Register(_ context.Context, request daemon.RouteRequest) (daemon.Lease, error) {
+	f.registers = append(f.registers, request)
+	return daemon.Lease{ID: "lease", Route: daemon.Route{Project: request.Project, Branch: request.Branch, Port: request.Port}}, nil
+}
+func (f *routeClientFake) Heartbeat(context.Context, string, time.Duration) (daemon.Lease, error) {
+	return daemon.Lease{}, nil
+}
+func (f *routeClientFake) Release(_ context.Context, lease string) error {
+	f.releases = append(f.releases, lease)
+	return nil
 }
 
 func mustValuesWithCleanup(t *testing.T, path string) env.Values {

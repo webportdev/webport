@@ -21,6 +21,7 @@ import (
 	"github.com/webportdev/webport/internal/devsession/plan"
 	"github.com/webportdev/webport/internal/devsession/ports"
 	"github.com/webportdev/webport/internal/devsession/readiness"
+	routeleases "github.com/webportdev/webport/internal/devsession/routes"
 	"github.com/webportdev/webport/internal/devsession/secrets"
 	"github.com/webportdev/webport/internal/devsession/supervisor"
 )
@@ -144,8 +145,24 @@ func Run(ctx context.Context, options Options) error {
 	fmt.Fprint(options.Out, resolvedPlan.Human())
 	runtime := env.Runtime{Project: id.Project, Branch: id.Branch, Scope: id.Scope, Ports: portValues, Routes: routes}
 	if len(resolvedPlan.Order) > 1 {
+		var routeManager *routeleases.Manager
+		if resolvedPlan.Routes.Daemon.Available && len(resolvedPlan.Routes.Routes) > 0 {
+			ttl := time.Duration(resolvedPlan.Routes.Daemon.DefaultTTL) * time.Second
+			if ttl <= 0 {
+				ttl = 5 * time.Minute
+			}
+			interval := ttl / 3
+			if interval <= 0 {
+				interval = time.Second
+			}
+			routeManager, err = routeleases.NewManager(daemonClient, ttl, interval)
+			if err != nil {
+				return err
+			}
+		}
 		result, runErr := supervisor.Run(ctx, resolvedPlan, supervisor.Options{
 			Environments: environments, Runtime: runtime, Out: options.Out, ErrOut: options.ErrOut,
+			RouteManager: routeManager, RoutePlans: resolvedPlan.Routes.Routes,
 		})
 		if runErr != nil {
 			return runErr

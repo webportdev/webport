@@ -16,6 +16,7 @@ import (
 	"github.com/webportdev/webport/internal/devsession/env"
 	"github.com/webportdev/webport/internal/devsession/plan"
 	"github.com/webportdev/webport/internal/devsession/readiness"
+	"github.com/webportdev/webport/internal/devsession/routes"
 )
 
 type State string
@@ -49,6 +50,8 @@ type Options struct {
 	ErrOut       io.Writer
 	SinkFactory  func(string) command.OutputSink
 	Runner       command.Runner
+	RouteManager *routes.Manager
+	RoutePlans   []plan.Route
 }
 
 type event struct {
@@ -56,6 +59,7 @@ type event struct {
 	state            State
 	err              error
 	registerShutdown bool
+	routeFailure     *routes.Failure
 }
 
 func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (Result, error) {
@@ -78,6 +82,20 @@ func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (Result, e
 	externalDone := ctx.Done()
 	registeredShutdowns := make(map[string]struct{})
 	cleanupDone := false
+	var routeFailures <-chan routes.Failure
+	if options.RouteManager != nil {
+		routeFailures = options.RouteManager.Failures()
+		go func() {
+			for {
+				select {
+				case failure := <-routeFailures:
+					events <- event{service: failure.Service, routeFailure: &failure}
+				case <-runCtx.Done():
+					return
+				}
+			}
+		}()
+	}
 
 	emit := func(service string, state State, err error) {
 		events <- event{service: service, state: state, err: err}
@@ -111,7 +129,7 @@ func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (Result, e
 			if primaryErr != nil {
 				if !cleanupDone {
 					cleanupDone = true
-					if cleanupErr := runShutdownCommands(registeredShutdowns, sessionPlan, options); cleanupErr != nil {
+					if cleanupErr := releaseRoutesAndShutdown(registeredShutdowns, sessionPlan, options); cleanupErr != nil {
 						primaryErr = errors.Join(primaryErr, cleanupErr)
 					}
 				}
@@ -127,7 +145,7 @@ func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (Result, e
 			if ctx.Err() != nil {
 				if !cleanupDone {
 					cleanupDone = true
-					if cleanupErr := runShutdownCommands(registeredShutdowns, sessionPlan, options); cleanupErr != nil {
+					if cleanupErr := releaseRoutesAndShutdown(registeredShutdowns, sessionPlan, options); cleanupErr != nil {
 						return Result{States: states, Events: eventLog}, cleanupErr
 					}
 				}
@@ -141,7 +159,7 @@ func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (Result, e
 				}
 			}
 			if !pending {
-				if len(registeredShutdowns) == 0 {
+				if len(registeredShutdowns) == 0 && (options.RouteManager == nil || !options.RouteManager.Active()) {
 					return Result{States: states, Events: eventLog}, nil
 				}
 				select {
@@ -162,6 +180,13 @@ func Run(ctx context.Context, sessionPlan plan.Plan, options Options) (Result, e
 			cancel()
 			externalDone = nil
 		case update := <-events:
+			if update.routeFailure != nil {
+				if update.routeFailure.Required && primaryErr == nil && runCtx.Err() == nil {
+					primaryErr = fmt.Errorf("required route for %s failed: %w", update.service, update.routeFailure.Error)
+					cancel()
+				}
+				continue
+			}
 			if update.registerShutdown {
 				registeredShutdowns[update.service] = struct{}{}
 				continue
@@ -236,6 +261,10 @@ func runService(ctx context.Context, name string, service plan.Service, options 
 			emit(name, StateFailed, fmt.Errorf("readiness failed after %d attempts (%s): %w", check.Attempts, check.LastProbe, readyErr))
 			return
 		}
+		if err := activateRoute(ctx, name, options); err != nil {
+			emit(name, StateFailed, err)
+			return
+		}
 		emit(name, StateReady, nil)
 		emit(name, StateSuccess, nil)
 		return
@@ -260,6 +289,11 @@ func runService(ctx context.Context, name string, service plan.Service, options 
 		}
 		_ = process.Terminate(syscall.SIGTERM, shutdownGrace(service))
 		emit(name, StateFailed, fmt.Errorf("readiness failed after %d attempts (%s): %w", check.Attempts, check.LastProbe, readyErr))
+		return
+	}
+	if err := activateRoute(ctx, name, options); err != nil {
+		_ = process.Terminate(syscall.SIGTERM, shutdownGrace(service))
+		emit(name, StateFailed, err)
 		return
 	}
 	emit(name, StateReady, nil)
@@ -309,6 +343,29 @@ func runShutdownCommands(registered map[string]struct{}, sessionPlan plan.Plan, 
 		}
 	}
 	return cleanupErr
+}
+
+func releaseRoutesAndShutdown(registered map[string]struct{}, sessionPlan plan.Plan, options Options) error {
+	var combined error
+	if options.RouteManager != nil {
+		combined = errors.Join(combined, options.RouteManager.ReleaseAll(context.Background()))
+	}
+	return errors.Join(combined, runShutdownCommands(registered, sessionPlan, options))
+}
+
+func activateRoute(ctx context.Context, service string, options Options) error {
+	if options.RouteManager == nil {
+		return nil
+	}
+	for _, item := range options.RoutePlans {
+		if item.Service == service && item.Available {
+			if err := options.RouteManager.Activate(ctx, item); err != nil {
+				return fmt.Errorf("activate route for %s: %w", service, err)
+			}
+			return nil
+		}
+	}
+	return nil
 }
 
 func sinkFor(options Options, service string) command.OutputSink {

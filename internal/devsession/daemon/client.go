@@ -30,10 +30,11 @@ type Config struct {
 }
 
 type RouteRequest struct {
-	Project string
-	Branch  string
-	Port    int
-	TTL     time.Duration
+	Project  string
+	Branch   string
+	Port     int
+	TTL      time.Duration
+	ClientID string
 }
 
 type Route struct {
@@ -97,13 +98,17 @@ func (c *HTTPClient) Config(ctx context.Context) (Config, error) {
 }
 
 func (c *HTTPClient) Register(ctx context.Context, route RouteRequest) (Lease, error) {
+	clientID := route.ClientID
+	if clientID == "" {
+		clientID = c.clientID
+	}
 	request := struct {
 		ClientID string `json:"client_id"`
 		Project  string `json:"project"`
 		Branch   string `json:"branch"`
 		Port     int    `json:"port"`
 		TTL      int    `json:"ttl"`
-	}{c.clientID, route.Project, route.Branch, route.Port, int(route.TTL.Seconds())}
+	}{clientID, route.Project, route.Branch, route.Port, int(route.TTL.Seconds())}
 	var response leaseResponse
 	err := c.doJSON(ctx, http.MethodPost, "/v1/leases", request, &response, http.StatusOK, http.StatusCreated)
 	if err == nil {
@@ -183,6 +188,13 @@ func NewLeaseManager(client Client, request RouteRequest, interval time.Duration
 	}
 	if interval <= 0 || interval >= request.TTL {
 		return nil, errors.New("heartbeat interval must be positive and shorter than TTL")
+	}
+	if request.ClientID == "" {
+		clientID, err := randomID()
+		if err != nil {
+			return nil, err
+		}
+		request.ClientID = clientID
 	}
 	return &LeaseManager{client: client, request: request, interval: interval}, nil
 }
@@ -304,3 +316,11 @@ func (c *HTTPClient) statusError(response *http.Response) error {
 }
 
 func (c *HTTPClient) endpoint(path string) string { return c.baseURL + path }
+
+func randomID() (string, error) {
+	var value [18]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("generate lease client ID: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(value[:]), nil
+}
