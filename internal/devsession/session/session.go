@@ -17,6 +17,7 @@ import (
 	"github.com/webportdev/webport/internal/devsession/config"
 	"github.com/webportdev/webport/internal/devsession/daemon"
 	"github.com/webportdev/webport/internal/devsession/env"
+	"github.com/webportdev/webport/internal/devsession/exports"
 	"github.com/webportdev/webport/internal/devsession/identity"
 	"github.com/webportdev/webport/internal/devsession/plan"
 	"github.com/webportdev/webport/internal/devsession/ports"
@@ -94,7 +95,9 @@ func Run(ctx context.Context, options Options) (runErr error) {
 		if runErr != nil {
 			last.Initiating = runErr.Error()
 		}
-		_ = stateStore.WriteLast(last)
+		if cfg.Session.RetainLastSummary == nil || *cfg.Session.RetainLastSummary {
+			_ = stateStore.WriteLast(last)
+		}
 		_ = stateStore.Release()
 	}()
 	profileEnv := map[string]config.Value{}
@@ -182,6 +185,24 @@ func Run(ctx context.Context, options Options) (runErr error) {
 			return resolveErr
 		}
 		environments[name] = values
+	}
+	exportPaths := make(map[string]string, len(cfg.Session.Exports))
+	for shell, path := range cfg.Session.Exports {
+		resolved, resolveErr := id.ResolvePath(path)
+		if resolveErr != nil {
+			return fmt.Errorf("export path %q: %w", path, resolveErr)
+		}
+		exportPaths[shell] = resolved
+	}
+	exportStore, err := exports.New(exportPaths)
+	if err != nil {
+		return err
+	}
+	defer exportStore.Remove()
+	if len(resolvedPlan.Order) > 0 && len(exportPaths) > 0 {
+		if err := exportStore.Write(exportPaths, environments[resolvedPlan.Order[0]]); err != nil {
+			return err
+		}
 	}
 	fmt.Fprint(options.Out, resolvedPlan.Human())
 	runtime := env.Runtime{Project: id.Project, Branch: id.Branch, Scope: id.Scope, Ports: portValues, Routes: routes}

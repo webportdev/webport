@@ -45,6 +45,7 @@ type LiveState struct {
 	PIDs          []ProcessIdentity       `json:"pids,omitempty"`
 	Endpoints     map[string]string       `json:"endpoints,omitempty"`
 	LogPaths      map[string]string       `json:"log_paths,omitempty"`
+	Exports       map[string]string       `json:"exports,omitempty"`
 	LastError     string                  `json:"last_error,omitempty"`
 }
 
