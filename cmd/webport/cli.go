@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -29,40 +30,7 @@ import (
 const defaultAPI = "http://127.0.0.1:8080"
 
 func main() {
-	if len(os.Args) == 1 {
-		// Compatibility with existing service definitions.
-		runDaemon()
-		return
-	}
-
-	var err error
-	switch os.Args[1] {
-	case "daemon":
-		runDaemon()
-	case "version", "--version":
-		fmt.Println(versionString())
-	case "help", "-h", "--help":
-		printHelp()
-	case "dev":
-		err = runDev(os.Args[2:])
-	case "route":
-		err = runRoute(os.Args[2:])
-	case "list":
-		err = printEndpoint("/routes")
-	case "status":
-		err = printEndpoint("/status")
-	case "config":
-		err = printEndpoint("/config")
-	case "doctor":
-		err = runDoctor()
-	case "dns":
-		err = runCompatibilityCommand("webport-dns", os.Args[2:])
-	case "install":
-		err = runInstaller(os.Args[2:])
-	default:
-		printHelp()
-		err = fmt.Errorf("unknown command %q", os.Args[1])
-	}
+	err := runCLIWithProcessStreams(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -70,7 +38,11 @@ func main() {
 }
 
 func printHelp() {
-	fmt.Print(`webport - HTTPS routes for local development servers
+	_ = writeHelp(os.Stdout)
+}
+
+func writeHelp(out io.Writer) error {
+	_, err := fmt.Fprint(out, `webport - HTTPS routes for local development servers
 
 Usage:
   webport install [options]
@@ -87,6 +59,7 @@ Usage:
 The local-first install uses webport.localhost and a private local CA.
 Run "webport dev -- npm run dev" from a Git checkout to publish a server.
 `)
+	return err
 }
 
 type routeFlags struct {
@@ -154,6 +127,10 @@ func runRoute(args []string) error {
 }
 
 func runDev(args []string) error {
+	return runDevWithIO(args, os.Stdin, os.Stdout, os.Stderr)
+}
+
+func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	separator := -1
 	for index, arg := range args {
 		if arg == "--" {
@@ -185,7 +162,7 @@ func runDev(args []string) error {
 	}
 	commandArgs := args[separator+1:]
 	command := exec.Command(commandArgs[0], commandArgs[1:]...)
-	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	command.Stdin, command.Stdout, command.Stderr = in, out, errOut
 	command.Env = append(os.Environ(),
 		"WEBPORT_ROUTE="+values.project+":"+values.branch,
 		"WEBPORT_CLIENT_TOKEN="+token,
@@ -368,7 +345,11 @@ func requireReady(api string) error {
 }
 
 func printEndpoint(path string) error {
-	resp, err := http.Get(defaultAPI + path)
+	return printEndpointTo(defaultAPI, path, os.Stdout)
+}
+
+func printEndpointTo(api, path string, out io.Writer) error {
+	resp, err := http.Get(strings.TrimRight(api, "/") + path)
 	if err != nil {
 		return err
 	}
@@ -380,17 +361,24 @@ func printEndpoint(path string) error {
 	if err := json.NewDecoder(resp.Body).Decode(&value); err != nil {
 		return err
 	}
-	output, _ := json.MarshalIndent(value, "", "  ")
-	fmt.Println(string(output))
-	return nil
+	output, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, string(output))
+	return err
 }
 
 func runDoctor() error {
-	fmt.Printf("webport %s\n", versionString())
+	return runDoctorTo(os.Stdout)
+}
+
+func runDoctorTo(out io.Writer) error {
+	fmt.Fprintf(out, "webport %s\n", versionString())
 	if err := requireReady(defaultAPI); err != nil {
 		return err
 	}
-	fmt.Println("PASS daemon API is ready")
+	fmt.Fprintln(out, "PASS daemon API is ready")
 
 	var cfg struct {
 		BaseDomain string `json:"base_domain"`
@@ -420,25 +408,33 @@ func runDoctor() error {
 		return errors.New("Traefik returned no certificate")
 	}
 	leaf := state.PeerCertificates[0]
-	fmt.Printf("PASS TLS certificate %s, expires %s\n", leaf.Subject.CommonName, leaf.NotAfter.Format(time.RFC3339))
+	fmt.Fprintf(out, "PASS TLS certificate %s, expires %s\n", leaf.Subject.CommonName, leaf.NotAfter.Format(time.RFC3339))
 	if _, err := net.LookupHost(serverName); err != nil {
 		return fmt.Errorf("wildcard name resolution for %s: %w", serverName, err)
 	}
-	fmt.Printf("PASS wildcard name resolution for %s\n", serverName)
+	fmt.Fprintf(out, "PASS wildcard name resolution for %s\n", serverName)
 	return nil
 }
 
 func runCompatibilityCommand(name string, args []string) error {
+	return runCompatibilityCommandTo(name, args, os.Stdin, os.Stdout, os.Stderr)
+}
+
+func runCompatibilityCommandTo(name string, args []string, in io.Reader, out, errOut io.Writer) error {
 	path, err := exec.LookPath(name)
 	if err != nil {
 		return fmt.Errorf("%s is not installed", name)
 	}
 	command := exec.Command(path, args...)
-	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	command.Stdin, command.Stdout, command.Stderr = in, out, errOut
 	return command.Run()
 }
 
 func runInstaller(args []string) error {
+	return runInstallerTo(args, os.Stdin, os.Stdout, os.Stderr)
+}
+
+func runInstallerTo(args []string, in io.Reader, out, errOut io.Writer) error {
 	candidates := []string{
 		filepath.Join("scripts", platformInstaller()),
 		filepath.Join("/usr/local/libexec/webport/installer/scripts", platformInstaller()),
@@ -447,7 +443,7 @@ func runInstaller(args []string) error {
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			command := exec.Command(candidate, args...)
-			command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+			command.Stdin, command.Stdout, command.Stderr = in, out, errOut
 			return command.Run()
 		}
 	}

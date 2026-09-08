@@ -9,10 +9,38 @@ import (
 	"strings"
 )
 
+// Worktree describes the canonical checkout containing the caller.
+type Worktree struct {
+	Root    string
+	Project string
+	Branch  string
+}
+
+// DetectWorktree resolves the current directory without changing the caller's
+// process working directory. It is the canonical identity lookup shared by
+// command-line clients and development sessions.
+func DetectWorktree() (Worktree, error) {
+	return DetectWorktreeFrom(".")
+}
+
+// DetectWorktreeFrom resolves a Git worktree from dir. A detached HEAD is
+// reported as an error so callers can require an explicit branch override.
+func DetectWorktreeFrom(dir string) (Worktree, error) {
+	root, err := findGitRootFrom(dir)
+	if err != nil {
+		return Worktree{}, err
+	}
+	branch, err := detectBranchFrom(root)
+	if err != nil {
+		return Worktree{}, err
+	}
+	return Worktree{Root: root, Project: filepath.Base(root), Branch: branch}, nil
+}
+
 // DetectProject detects the project name from the git repository basename.
 // It searches upward from the current directory to find the git root.
 func DetectProject() (string, error) {
-	root, err := findGitRoot()
+	root, err := FindWorktreeRoot(".")
 	if err != nil {
 		return "", fmt.Errorf("failed to find git root: %w", err)
 	}
@@ -21,6 +49,15 @@ func DetectProject() (string, error) {
 
 // DetectBranch detects the current git branch name.
 func DetectBranch() (string, error) {
+	return detectBranchFrom(".")
+}
+
+// FindWorktreeRoot returns the canonical Git worktree root for dir.
+func FindWorktreeRoot(dir string) (string, error) {
+	return findGitRootFrom(dir)
+}
+
+func detectBranchFrom(dir string) (string, error) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		return "", fmt.Errorf("git not found in PATH: %w", err)
@@ -29,13 +66,13 @@ func DetectBranch() (string, error) {
 	// Try to get the branch name using git symbolic-ref (for normal branches)
 	// If that fails, fall back to git rev-parse (for detached HEAD)
 	var out bytes.Buffer
-	cmd := exec.Command(gitPath, "symbolic-ref", "--short", "HEAD")
+	cmd := exec.Command(gitPath, "-C", dir, "symbolic-ref", "--short", "HEAD")
 	cmd.Stdout = &out
 	cmd.Stderr = &bytes.Buffer{}
 
 	if err := cmd.Run(); err != nil {
 		// Likely in detached HEAD state, try rev-parse
-		cmd = exec.Command(gitPath, "rev-parse", "--abbrev-ref", "HEAD")
+		cmd = exec.Command(gitPath, "-C", dir, "rev-parse", "--abbrev-ref", "HEAD")
 		cmd.Stdout = &out
 		cmd.Stderr = &bytes.Buffer{}
 		if err := cmd.Run(); err != nil {
@@ -53,13 +90,17 @@ func DetectBranch() (string, error) {
 
 // findGitRoot finds the git repository root directory by searching upward.
 func findGitRoot() (string, error) {
+	return findGitRootFrom(".")
+}
+
+func findGitRootFrom(dir string) (string, error) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		return "", fmt.Errorf("git not found in PATH: %w", err)
 	}
 
 	var out bytes.Buffer
-	cmd := exec.Command(gitPath, "rev-parse", "--show-toplevel")
+	cmd := exec.Command(gitPath, "-C", dir, "rev-parse", "--show-toplevel")
 	cmd.Stdout = &out
 	cmd.Stderr = &bytes.Buffer{}
 
