@@ -117,3 +117,36 @@ services: {app: {command: [sh, -c, 'exit 0'], completion: exit}}
 		}
 	}
 }
+
+func TestConfiguredConfigFiltersInheritedEnvironmentByDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".webport.yaml")
+	content := `version: 1
+project: sample
+branch: main
+worktree_root: .
+profiles: {default: {services: [app]}}
+env: {WEBPORT_CONFIGURED_TEST_MARKER: configured-value}
+services: {app: {command: [sh, -c, 'exit 0'], completion: exit}}
+`
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WEBPORT_INHERITED_TEST_MARKER", "inherited-value")
+	for _, includeInherited := range []bool{false, true} {
+		args := []string{"config", "--config", path, "--format", "json"}
+		if includeInherited {
+			args = append(args, "--include-inherited")
+		}
+		var output bytes.Buffer
+		if err := runDevWithIO(args, nil, &output, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(output.String(), "WEBPORT_CONFIGURED_TEST_MARKER") {
+			t.Fatalf("configured value missing with includeInherited=%t: %s", includeInherited, output.String())
+		}
+		containsInherited := strings.Contains(output.String(), "WEBPORT_INHERITED_TEST_MARKER")
+		if containsInherited != includeInherited {
+			t.Fatalf("inherited value visibility = %t, want %t: %s", containsInherited, includeInherited, output.String())
+		}
+	}
+}

@@ -39,6 +39,30 @@ func TestResolveAppliesPrecedenceAndForwardReferences(t *testing.T) {
 	}
 }
 
+func TestManagedOnlyExcludesInheritedValuesAndKeepsOverrides(t *testing.T) {
+	literal := func(value string) config.Value { return config.Value{Literal: stringPtr(value)} }
+	got, err := Resolve(Input{
+		Inherited: map[string]string{
+			"INHERITED_ONLY": "from-process",
+			"OVERRIDDEN":     "from-process",
+		},
+		Top: map[string]config.Value{
+			"OVERRIDDEN": literal("from-webport"),
+			"MANAGED":    literal("configured"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	managed := got.ManagedOnly().Map(true)
+	if _, ok := managed["INHERITED_ONLY"]; ok {
+		t.Fatalf("managed values retained inherited-only variable: %v", managed)
+	}
+	if managed["OVERRIDDEN"] != "from-webport" || managed["MANAGED"] != "configured" {
+		t.Fatalf("managed values = %v", managed)
+	}
+}
+
 func TestResolveMarksInheritedValuesSensitiveWhenRequested(t *testing.T) {
 	values, err := Resolve(Input{
 		Inherited:          map[string]string{"TOKEN": "secret"},

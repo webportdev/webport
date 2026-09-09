@@ -18,6 +18,7 @@ import (
 type Entry struct {
 	Value     string `json:"value"`
 	Sensitive bool   `json:"sensitive,omitempty"`
+	Managed   bool   `json:"-"`
 }
 
 type Values struct {
@@ -30,7 +31,7 @@ func (v Values) With(values map[string]string) Values {
 		entries[name] = entry
 	}
 	for name, value := range values {
-		entries[name] = Entry{Value: value}
+		entries[name] = Entry{Value: value, Managed: true}
 	}
 	return Values{entries: entries}
 }
@@ -56,9 +57,21 @@ func (v Values) ExpandRuntimeValues(runtime Runtime) (Values, error) {
 		if err != nil {
 			return Values{}, fmt.Errorf("environment %s: %w", name, err)
 		}
-		entries[name] = Entry{Value: value, Sensitive: entry.Sensitive}
+		entries[name] = Entry{Value: value, Sensitive: entry.Sensitive, Managed: entry.Managed}
 	}
 	return Values{entries: entries}, nil
+}
+
+// ManagedOnly returns values contributed by Webport or the configured session,
+// excluding unmodified inherited process environment.
+func (v Values) ManagedOnly() Values {
+	entries := make(map[string]Entry)
+	for name, entry := range v.entries {
+		if entry.Managed {
+			entries[name] = entry
+		}
+	}
+	return Values{entries: entries}
 }
 
 func (v Values) ConfigValues() map[string]config.Value {
@@ -110,7 +123,7 @@ func Resolve(input Input) (Values, error) {
 			return Values{}, err
 		}
 		for name, value := range values {
-			entries[name] = Entry{Value: value}
+			entries[name] = Entry{Value: value, Managed: true}
 		}
 	}
 	for name, value := range input.Top {
@@ -118,6 +131,7 @@ func Resolve(input Input) (Values, error) {
 		if err != nil {
 			return Values{}, fmt.Errorf("env.%s: %w", name, err)
 		}
+		entry.Managed = true
 		entries[name] = entry
 	}
 	for name, value := range input.Profile {
@@ -125,6 +139,7 @@ func Resolve(input Input) (Values, error) {
 		if err != nil {
 			return Values{}, fmt.Errorf("profile env.%s: %w", name, err)
 		}
+		entry.Managed = true
 		entries[name] = entry
 	}
 	for name, value := range input.Service {
@@ -132,6 +147,7 @@ func Resolve(input Input) (Values, error) {
 		if err != nil {
 			return Values{}, fmt.Errorf("service env.%s: %w", name, err)
 		}
+		entry.Managed = true
 		entries[name] = entry
 	}
 	for _, route := range input.Routes.Routes {
@@ -148,7 +164,7 @@ func Resolve(input Input) (Values, error) {
 			default:
 				return Values{}, fmt.Errorf("route %s has unsupported export %q", route.Service, kind)
 			}
-			entries[alias] = Entry{Value: value}
+			entries[alias] = Entry{Value: value, Managed: true}
 		}
 	}
 
@@ -344,7 +360,7 @@ func (r *resolver) resolveEnv(name string) (Entry, error) {
 	if err != nil {
 		return Entry{}, fmt.Errorf("env.%s: %w", name, err)
 	}
-	result := Entry{Value: value, Sensitive: entry.Sensitive || sensitive}
+	result := Entry{Value: value, Sensitive: entry.Sensitive || sensitive, Managed: entry.Managed}
 	r.resolved[name] = result
 	return result, nil
 }

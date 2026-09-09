@@ -71,6 +71,9 @@ Run "webport dev -- npm run dev" from a Git checkout to publish a server.
 Run "webport dev" in a checkout with .webport.yaml to use a configured
 foreground session. Use "webport dev status" or "webport dev logs --follow"
 from another terminal while it runs.
+Use "webport dev config --include-inherited" or
+"webport dev env --include-inherited" to include inherited process environment
+variables in inspection output.
 `)
 	return err
 }
@@ -161,6 +164,7 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	var format string
 	var configPath, profile string
 	var showSensitive bool
+	var includeInherited bool
 	var shell string
 	var follow bool
 	var cleanSecrets bool
@@ -170,6 +174,7 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	flags.StringVar(&configPath, "config", "", "development session configuration path")
 	flags.StringVar(&profile, "profile", "", "development session profile")
 	flags.BoolVar(&showSensitive, "show-sensitive", false, "show sensitive values in interactive inspection output")
+	flags.BoolVar(&includeInherited, "include-inherited", false, "include inherited process environment in inspection output")
 	flags.StringVar(&shell, "shell", "bash", "environment output shell: bash, fish, or json")
 	flags.BoolVar(&follow, "follow", false, "follow development session logs")
 	flags.BoolVar(&cleanSecrets, "secrets", false, "remove project-lifetime generated secrets")
@@ -183,7 +188,7 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	if separator < 0 {
 		positional := flags.Args()
 		if len(positional) > 0 && isDevInspectionOperation(positional[0]) {
-			operationArgs, err := parseDevOperationArgs(positional[1:], &configPath, &profile, &values.api, &format, &shell, &showSensitive, &follow, &cleanSecrets)
+			operationArgs, err := parseDevOperationArgs(positional[1:], &configPath, &profile, &values.api, &format, &shell, &showSensitive, &includeInherited, &follow, &cleanSecrets)
 			if err != nil {
 				return err
 			}
@@ -196,7 +201,7 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 			if cleanSecrets {
 				operationArgs = append(operationArgs, "--secrets")
 			}
-			return runDevInspection(positional[0], operationArgs, configPath, profile, values.api, shell, format, showSensitive, in, out, errOut)
+			return runDevInspection(positional[0], operationArgs, configPath, profile, values.api, shell, format, showSensitive, includeInherited, in, out, errOut)
 		}
 		if format != "" {
 			if err := values.inferIdentity(); err != nil {
@@ -348,7 +353,7 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	return releaseErr
 }
 
-func parseDevOperationArgs(args []string, configPath, profile, api, format, shell *string, showSensitive, follow, cleanSecrets *bool) ([]string, error) {
+func parseDevOperationArgs(args []string, configPath, profile, api, format, shell *string, showSensitive, includeInherited, follow, cleanSecrets *bool) ([]string, error) {
 	positional := make([]string, 0, len(args))
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
@@ -399,6 +404,11 @@ func parseDevOperationArgs(args []string, configPath, profile, api, format, shel
 				return nil, fmt.Errorf("option %s does not take a value", name)
 			}
 			*showSensitive = true
+		case "--include-inherited":
+			if hasValue {
+				return nil, fmt.Errorf("option %s does not take a value", name)
+			}
+			*includeInherited = true
 		case "--follow":
 			if hasValue {
 				return nil, fmt.Errorf("option %s does not take a value", name)
@@ -425,8 +435,8 @@ func isDevInspectionOperation(operation string) bool {
 	}
 }
 
-func runDevInspection(operation string, operationArgs []string, configPath, profile, api, shell, format string, showSensitive bool, in io.Reader, out, errOut io.Writer) error {
-	options := devsession.Options{ConfigPath: configPath, Profile: profile, API: api, In: in, Out: out}
+func runDevInspection(operation string, operationArgs []string, configPath, profile, api, shell, format string, showSensitive, includeInherited bool, in io.Reader, out, errOut io.Writer) error {
+	options := devsession.Options{ConfigPath: configPath, Profile: profile, API: api, In: in, Out: out, IncludeInherited: includeInherited}
 	switch operation {
 	case "check", "config":
 		options.PreferLive, options.ShowSensitive = operation == "config", showSensitive
@@ -464,7 +474,7 @@ func runDevInspection(operation string, operationArgs []string, configPath, prof
 		_, err = fmt.Fprintf(out, "development session status\n%v\n", value)
 		return err
 	case "env":
-		response, err := devsession.Control(context.Background(), options, "env", map[string]any{"show_sensitive": showSensitive})
+		response, err := devsession.Control(context.Background(), options, "env", map[string]any{"show_sensitive": showSensitive, "include_inherited": includeInherited})
 		if err != nil {
 			return err
 		}

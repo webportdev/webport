@@ -235,18 +235,25 @@ func runtimeFor(p plan.Plan) env.Runtime {
 	return env.Runtime{Project: p.Identity.Project, Branch: p.Identity.Branch, Scope: p.Identity.Scope, Ports: values, DeferredPorts: deferred, Routes: routes}
 }
 
-func inspectEnvironments(p plan.Plan, environments map[string]env.Values) plan.Plan {
+func inspectEnvironments(p plan.Plan, environments map[string]env.Values, includeInherited bool) plan.Plan {
 	p.Services = cloneServices(p.Services)
 	runtime := runtimeFor(p)
 	for name, values := range environments {
 		if resolved, err := values.ExpandRuntimeValues(runtime); err == nil {
 			values = resolved
 		}
+		if !includeInherited {
+			values = values.ManagedOnly()
+		}
 		service := p.Services[name]
 		service.Env = values.ConfigValues()
 		p.Services[name] = service
 	}
-	p.Environment = sessionEnvironment(p, environments).ConfigValues()
+	allValues := sessionEnvironment(p, environments)
+	if !includeInherited {
+		allValues = allValues.ManagedOnly()
+	}
+	p.Environment = allValues.ConfigValues()
 	return p
 }
 

@@ -30,17 +30,18 @@ import (
 )
 
 type Options struct {
-	CurrentDir    string
-	ConfigPath    string
-	Profile       string
-	Service       string
-	API           string
-	In            io.Reader
-	Out           io.Writer
-	ErrOut        io.Writer
-	StopSignal    func() os.Signal
-	PreferLive    bool
-	ShowSensitive bool
+	CurrentDir       string
+	ConfigPath       string
+	Profile          string
+	Service          string
+	API              string
+	In               io.Reader
+	Out              io.Writer
+	ErrOut           io.Writer
+	StopSignal       func() os.Signal
+	PreferLive       bool
+	ShowSensitive    bool
+	IncludeInherited bool
 }
 
 func Run(ctx context.Context, options Options) (runErr error) {
@@ -90,7 +91,8 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	if err != nil {
 		return err
 	}
-	inspectionPlan := inspectEnvironments(resolvedPlan, environments)
+	inspectionPlan := inspectEnvironments(resolvedPlan, environments, true)
+	managedInspectionPlan := inspectEnvironments(resolvedPlan, environments, false)
 	runtime := runtimeFor(resolvedPlan)
 	selectedConfig, err := plan.Select(cfg, plan.BuildOptions{Profile: options.Profile, Service: options.Service})
 	if err != nil {
@@ -225,6 +227,7 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	controlPath := strings.TrimSuffix(stateStore.LivePath, ".live.json") + ".sock"
 	control, err := state.StartControl(controlPath, func(_ context.Context, request state.Request) state.Response {
 		showSensitive, _ := request.Payload["show_sensitive"].(bool)
+		includeInherited, _ := request.Payload["include_inherited"].(bool)
 		switch request.Operation {
 		case "stop":
 			cancel()
@@ -238,8 +241,12 @@ func Run(ctx context.Context, options Options) (runErr error) {
 			value.ControlToken = ""
 			return state.Response{OK: true, Payload: map[string]any{"state": value}}
 		case "config":
+			selectedPlan := managedInspectionPlan
+			if includeInherited {
+				selectedPlan = inspectionPlan
+			}
 			if structured, _ := request.Payload["structured"].(bool); structured {
-				value := inspectionPlan
+				value := selectedPlan
 				if !showSensitive {
 					value.Services = cloneServices(value.Services)
 					hide := func(values map[string]config.Value) map[string]config.Value {
@@ -261,7 +268,7 @@ func Run(ctx context.Context, options Options) (runErr error) {
 				}
 				return state.Response{OK: true, Payload: map[string]any{"plan": value}}
 			}
-			encoded, err := inspectionPlan.JSON(showSensitive)
+			encoded, err := selectedPlan.JSON(showSensitive)
 			if err != nil {
 				return state.Response{Error: err.Error()}
 			}
@@ -277,6 +284,9 @@ func Run(ctx context.Context, options Options) (runErr error) {
 			planMu.RUnlock()
 			if resolved, resolveErr := values.ExpandRuntimeValues(currentRuntime); resolveErr == nil {
 				values = resolved
+			}
+			if !includeInherited {
+				values = values.ManagedOnly()
 			}
 			return state.Response{OK: true, Payload: map[string]any{"values": values.Map(showSensitive)}}
 		case "exec-info":

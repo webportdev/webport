@@ -256,10 +256,14 @@ The session commands are distinct from daemon-level `webport status` and
   generator policies, readiness configuration, and executables without
   starting commands or creating generated values;
 * `config` prints the resolved redacted plan, preferring the live session's
-  actual ports and values when available; `--show-sensitive` explicitly
-  reveals sensitive values in this inspection output;
+  actual ports and values when available. Values contributed by Webport or the
+  session configuration are shown by default; `--include-inherited` also
+  includes the inherited process environment, and `--show-sensitive`
+  explicitly reveals sensitive values in this inspection output;
 * `status` prints live state or the retained last-session record;
-* `env` renders Bash/POSIX/Zsh, Fish, or JSON environment data;
+* `env` renders Bash/POSIX/Zsh, Fish, or JSON environment data. It shows
+  Webport-managed values by default; `--include-inherited` restores the full
+  resolved environment;
 * `logs` reads configured paths and may follow active files;
 * `exec` runs a one-off command with the selected service environment;
 * `stop` asks the foreground owner to run graceful shutdown; and

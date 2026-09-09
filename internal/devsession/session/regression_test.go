@@ -59,6 +59,7 @@ func TestInspectValidatesRuntimeInputsWithoutStartingOrGenerating(t *testing.T) 
 }
 
 func TestInspectEnvironmentIncludesEverySelectedService(t *testing.T) {
+	t.Setenv("WEBPORT_INHERITED_ENV_TEST", "inherited")
 	options := sessionFixture(t, `profiles: {default: {services: [frontend, backend]}}
 services:
   frontend: {command: ['true'], env: {FRONTEND_ONLY: frontend}}
@@ -70,6 +71,17 @@ services:
 	}
 	if plan.Environment["FRONTEND_ONLY"].Literal == nil || plan.Environment["BACKEND_ONLY"].Literal == nil {
 		t.Fatalf("session environment omitted a service: %+v", plan.Environment)
+	}
+	if _, ok := plan.Environment["WEBPORT_INHERITED_ENV_TEST"]; ok {
+		t.Fatalf("default inspection included inherited environment: %+v", plan.Environment)
+	}
+	options.IncludeInherited = true
+	plan, err = InspectConfig(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Environment["WEBPORT_INHERITED_ENV_TEST"].Literal == nil {
+		t.Fatalf("include-inherited inspection omitted inherited environment: %+v", plan.Environment)
 	}
 }
 
@@ -103,6 +115,7 @@ services:
 }
 
 func TestSingleExitResourcePersistsUntilStopAndRecordsState(t *testing.T) {
+	t.Setenv("WEBPORT_INHERITED_ENV_TEST", "inherited")
 	options := sessionFixture(t, `profiles: {default: {services: [resource]}}
 env:
   PASSWORD: {value: never-in-status, sensitive: true}
@@ -139,6 +152,25 @@ services:
 	encoded, _ := json.Marshal(live)
 	if strings.Contains(string(encoded), "never-in-status") {
 		t.Fatal("status leaked sensitive value")
+	}
+	defaultEnv, err := Control(ctx, options, "env", map[string]any{})
+	if err != nil || !defaultEnv.OK {
+		t.Fatalf("default env inspection failed: %+v, %v", defaultEnv, err)
+	}
+	defaultValues, ok := defaultEnv.Payload["values"].(map[string]any)
+	if !ok {
+		t.Fatalf("default env values = %#v", defaultEnv.Payload["values"])
+	}
+	if _, ok := defaultValues["WEBPORT_INHERITED_ENV_TEST"]; ok {
+		t.Fatalf("default env inspection included inherited environment: %v", defaultValues)
+	}
+	allEnv, err := Control(ctx, options, "env", map[string]any{"include_inherited": true})
+	if err != nil || !allEnv.OK {
+		t.Fatalf("include-inherited env inspection failed: %+v, %v", allEnv, err)
+	}
+	allValues, ok := allEnv.Payload["values"].(map[string]any)
+	if !ok || allValues["WEBPORT_INHERITED_ENV_TEST"] != "<redacted>" {
+		t.Fatalf("include-inherited env values = %#v", allEnv.Payload["values"])
 	}
 	options.PreferLive = true
 	hiddenPlan, err := InspectConfig(ctx, options)

@@ -39,7 +39,7 @@ func InspectConfig(ctx context.Context, options Options) (plan.Plan, error) {
 		live, err := store.ReadLive()
 		if err == nil {
 			response, err := state.Dial(ctx, live.ControlPath, live.ControlToken, state.Request{
-				Operation: "config", Payload: map[string]any{"structured": true, "show_sensitive": options.ShowSensitive},
+				Operation: "config", Payload: map[string]any{"structured": true, "show_sensitive": options.ShowSensitive, "include_inherited": options.IncludeInherited},
 			})
 			if err != nil {
 				return plan.Plan{}, err
@@ -72,7 +72,7 @@ func InspectConfig(ctx context.Context, options Options) (plan.Plan, error) {
 	if err != nil {
 		return plan.Plan{}, err
 	}
-	return inspectEnvironments(p, environments), nil
+	return inspectEnvironments(p, environments, options.IncludeInherited), nil
 }
 
 func Status(options Options) (any, error) {
