@@ -53,10 +53,22 @@ curl -fsSL https://raw.githubusercontent.com/webportdev/webport/master/scripts/b
   --local --trust-local-ca --non-interactive --yes
 ```
 
+Upgrade an existing installation to the latest release without repeating its
+configuration:
+
+```bash
+webport upgrade
+```
+
+The upgrade reuses the saved domain, TLS mode, DNS provider, zone, and
+credentials. It does not change local-CA trust unless `--trust-local-ca` is
+explicitly supplied.
+
 ## Commands
 
 ```text
-webport install [options]                    Install or update the stack
+webport install [options]                    Install or reconfigure the stack
+webport upgrade [options]                    Upgrade using the saved configuration
 webport dev [options] -- COMMAND [ARG...]    Run and publish a dev server
 webport route --port PORT [options]          Publish an already-running server
 webport list                                 List active routes

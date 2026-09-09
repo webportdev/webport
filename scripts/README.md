@@ -13,6 +13,17 @@ From a checkout:
 ./scripts/install-macos.sh  # macOS/LaunchDaemons
 ```
 
+After installation, upgrade to the latest release while reusing the saved
+configuration with:
+
+```bash
+webport upgrade
+```
+
+The upgrade preserves the configured domain, TLS mode, DNS provider, zone, and
+credentials. Use `--trust-local-ca` explicitly if the local CA should also be
+trusted or re-trusted.
+
 Both installers support `webport`, `traefik`, and `full` modes. Managed
 Traefik installations download the pinned official upstream binary and verify
 its published checksum. No custom proxy build or Docker image is required.

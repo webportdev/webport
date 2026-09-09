@@ -25,6 +25,7 @@ TRUST_LOCAL_CA=0
 NON_INTERACTIVE=0
 ASSUME_YES=0
 DRY_RUN=0
+UPGRADE=0
 ROOT=${WEBPORT_INSTALL_ROOT:-/}
 PLATFORM=${WEBPORT_INSTALL_PLATFORM:-linux}
 [[ "$PLATFORM" =~ ^(linux|darwin)$ ]] || {
@@ -68,6 +69,9 @@ Binary sources:
 Automation:
   --dns-ipv4 ADDRESS --dns-ipv6 ADDRESS --dns-zone ZONE
   --non-interactive --yes --dry-run
+
+Upgrade:
+  --upgrade                 Reuse the existing installation configuration
 
 Cloudflare uses CF_DNS_API_TOKEN. DigitalOcean uses DO_AUTH_TOKEN.
 Other Lego providers require a credentials file containing their environment variables.
@@ -140,6 +144,7 @@ while (($#)); do
 		--non-interactive) NON_INTERACTIVE=1; shift ;;
 		--yes|-y) ASSUME_YES=1; shift ;;
 		--dry-run) DRY_RUN=1; shift ;;
+		--upgrade) UPGRADE=1; shift ;;
 		--help|-h) usage; exit 0 ;;
 		--caddy-*|--module-*|--provider-name|--token-env-var) die "Caddy options were removed; use Traefik options" ;;
 		--*token*|--*secret*|--*credential-value*) die "secret values must be supplied through --credentials-file" ;;
@@ -153,6 +158,101 @@ prompt_value() {
 	read -r -p "$prompt: " value
 	printf -v "$variable" '%s' "$value"
 }
+
+managed_caddy_marker=
+managed_traefik_marker=
+caddy_binary=
+traefik_binary=
+caddy_service=
+traefik_service=
+webport_service=
+webport_stack_target=
+traefik_config_path=
+traefik_dynamic_path=
+traefik_credentials_path=
+dns_credentials_path=
+webport_config_path=
+local_ca_path=
+if [[ "$PLATFORM" == darwin ]]; then
+	managed_caddy_marker=$(path /usr/local/etc/caddy/.webport-managed)
+	managed_traefik_marker=$(path /usr/local/etc/traefik/.webport-managed)
+	caddy_binary=$(path /usr/local/bin/caddy)
+	traefik_binary=$(path /usr/local/bin/traefik)
+	caddy_service=$(path /Library/LaunchDaemons/com.webport.caddy.plist)
+	traefik_service=$(path /Library/LaunchDaemons/com.webport.traefik.plist)
+	webport_service=$(path /Library/LaunchDaemons/com.webport.webport.plist)
+	traefik_config_path=/usr/local/etc/traefik/traefik.yml
+	traefik_dynamic_path=/usr/local/etc/traefik/dynamic/webport.yml
+	traefik_credentials_path=/usr/local/etc/traefik/traefik.env
+	dns_credentials_path=/usr/local/etc/webport/dns.env
+	webport_config_path=/usr/local/etc/webport/webport.env
+	local_ca_path=/usr/local/etc/traefik/dynamic/webport-pki
+else
+	managed_caddy_marker=$(path /etc/caddy/.webport-managed)
+	managed_traefik_marker=$(path /etc/traefik/.webport-managed)
+	caddy_binary=$(path /usr/local/bin/caddy)
+	traefik_binary=$(path /usr/local/bin/traefik)
+	caddy_service=$(path /etc/systemd/system/caddy.service)
+	traefik_service=$(path /etc/systemd/system/traefik.service)
+	webport_service=$(path /etc/systemd/system/webport.service)
+	webport_stack_target=$(path /etc/systemd/system/webport-stack.target)
+	traefik_config_path=/etc/traefik/traefik.yml
+	traefik_dynamic_path=/etc/traefik/dynamic/webport.yml
+	traefik_credentials_path=/etc/traefik/traefik.env
+	dns_credentials_path=/etc/webport/dns.env
+	webport_config_path=/etc/webport/webport.env
+	local_ca_path=/etc/traefik/dynamic/webport-pki
+fi
+
+read_config_value() {
+	local key=$1 file=$2 line=
+	if [[ -r "$file" ]]; then
+		line=$(grep -E "^${key}=" "$file" | tail -n 1 || true)
+	elif [[ "$ROOT" == / ]]; then
+		command -v sudo >/dev/null 2>&1 || die "sudo is required to read the existing webport configuration"
+		line=$(sudo grep -E "^${key}=" "$file" | tail -n 1 || true)
+	else
+		return 1
+	fi
+	[[ -n "$line" ]] || return 1
+	printf '%s' "${line#*=}"
+}
+
+map_installed_path() {
+	local value=$1
+	if [[ "$ROOT" != / && "$value" == /* ]]; then
+		path "$value"
+	else
+		printf '%s' "$value"
+	fi
+}
+
+load_upgrade_configuration() {
+	local config_file existing_base existing_tls existing_provider existing_zone existing_credentials
+	config_file=$(path "$webport_config_path")
+	[[ -f "$config_file" ]] ||
+		die "cannot upgrade: existing webport configuration was not found at $webport_config_path"
+	existing_base=$(read_config_value WEBPORT_BASE_DOMAIN "$config_file") ||
+		die "cannot upgrade: WEBPORT_BASE_DOMAIN is missing from $webport_config_path"
+	existing_tls=$(read_config_value WEBPORT_TLS_MODE "$config_file") ||
+		die "cannot upgrade: WEBPORT_TLS_MODE is missing from $webport_config_path"
+	existing_provider=$(read_config_value WEBPORT_DNS_PROVIDER "$config_file") || true
+	existing_zone=$(read_config_value WEBPORT_DNS_ZONE "$config_file") || true
+	existing_credentials=$(read_config_value WEBPORT_DNS_CREDENTIALS_FILE "$config_file") || true
+
+	[[ -n "$MODE" ]] || {
+		if [[ -f "$managed_traefik_marker" ]]; then MODE=full; else MODE=webport; fi
+	}
+	[[ -n "$BASE_DOMAIN" ]] || BASE_DOMAIN=$existing_base
+	[[ -n "$TLS_MODE" ]] || TLS_MODE=$existing_tls
+	[[ -n "$PROVIDER" ]] || PROVIDER=$existing_provider
+	[[ -n "$DNS_ZONE" ]] || DNS_ZONE=$existing_zone
+	[[ -n "$CREDENTIALS_FILE" ]] || CREDENTIALS_FILE=$(map_installed_path "$existing_credentials")
+}
+
+if (( UPGRADE )); then
+	load_upgrade_configuration
+fi
 
 [[ -n "$MODE" ]] || MODE=full
 if [[ -z "$TLS_MODE" ]]; then
@@ -171,7 +271,7 @@ if (( TRUST_LOCAL_CA )); then
 	[[ "$TLS_MODE" == local-ca ]] || die "--trust-local-ca requires --tls-mode local-ca"
 	[[ "$MODE" != traefik ]] || die "--trust-local-ca requires webport or full install mode"
 fi
-if [[ "$TLS_MODE" == local-ca && "$MODE" != traefik && "$ROOT" == / ]]; then
+if (( ! UPGRADE )) && [[ "$TLS_MODE" == local-ca && "$MODE" != traefik && "$ROOT" == / ]]; then
 	if (( NON_INTERACTIVE && ! TRUST_LOCAL_CA )); then
 		die "non-interactive local installation requires --trust-local-ca"
 	fi
@@ -321,37 +421,6 @@ collect_interactive_credentials() {
 	CREDENTIALS_FILE=$INTERACTIVE_CREDENTIALS
 }
 
-if [[ "$PLATFORM" == darwin ]]; then
-	managed_caddy_marker=$(path /usr/local/etc/caddy/.webport-managed)
-	managed_traefik_marker=$(path /usr/local/etc/traefik/.webport-managed)
-	caddy_binary=$(path /usr/local/bin/caddy)
-	traefik_binary=$(path /usr/local/bin/traefik)
-	caddy_service=$(path /Library/LaunchDaemons/com.webport.caddy.plist)
-	traefik_service=$(path /Library/LaunchDaemons/com.webport.traefik.plist)
-	webport_service=$(path /Library/LaunchDaemons/com.webport.webport.plist)
-	traefik_config_path=/usr/local/etc/traefik/traefik.yml
-	traefik_dynamic_path=/usr/local/etc/traefik/dynamic/webport.yml
-	traefik_credentials_path=/usr/local/etc/traefik/traefik.env
-	dns_credentials_path=/usr/local/etc/webport/dns.env
-	webport_config_path=/usr/local/etc/webport/webport.env
-	local_ca_path=/usr/local/etc/traefik/dynamic/webport-pki
-	webport_stack_target=
-else
-	managed_caddy_marker=$(path /etc/caddy/.webport-managed)
-	managed_traefik_marker=$(path /etc/traefik/.webport-managed)
-	caddy_binary=$(path /usr/local/bin/caddy)
-	traefik_binary=$(path /usr/local/bin/traefik)
-	caddy_service=$(path /etc/systemd/system/caddy.service)
-	traefik_service=$(path /etc/systemd/system/traefik.service)
-	webport_service=$(path /etc/systemd/system/webport.service)
-	webport_stack_target=$(path /etc/systemd/system/webport-stack.target)
-	traefik_config_path=/etc/traefik/traefik.yml
-	traefik_dynamic_path=/etc/traefik/dynamic/webport.yml
-	traefik_credentials_path=/etc/traefik/traefik.env
-	dns_credentials_path=/etc/webport/dns.env
-	webport_config_path=/etc/webport/webport.env
-	local_ca_path=/etc/traefik/dynamic/webport-pki
-fi
 migrating_caddy=0
 stack_available=0
 

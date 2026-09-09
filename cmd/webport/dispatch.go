@@ -40,6 +40,8 @@ func runCLI(args []string, in io.Reader, out, errOut io.Writer) error {
 		return runCompatibilityCommandTo("webport-dns", args[1:], in, out, errOut)
 	case "install":
 		return runInstallerTo(args[1:], in, out, errOut)
+	case "upgrade":
+		return runUpgradeTo(args[1:], in, out, errOut)
 	default:
 		_ = writeHelp(out)
 		return fmt.Errorf("unknown command %q", args[0])

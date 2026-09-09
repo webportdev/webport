@@ -69,6 +69,19 @@ assert_contains "$root/Library/LaunchDaemons/com.webport.webport.plist" "<string
 assert_contains "$LAUNCHCTL_LOG" "kickstart -k system/com.webport.traefik"
 assert_contains "$LAUNCHCTL_LOG" "kickstart -k system/com.webport.webport"
 
+root="$tmp/upgrade"
+WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
+	--mode full --provider cloudflare --base-domain dev.example.com \
+	--credentials-file "$credentials" --webport-source local --traefik-source local \
+	--artifact-dir "$artifacts" --non-interactive --yes
+WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
+	--upgrade --webport-source local --traefik-source local --artifact-dir "$artifacts" \
+	--non-interactive --yes
+assert_contains "$root/usr/local/etc/webport/webport.env" "WEBPORT_BASE_DOMAIN=dev.example.com"
+assert_contains "$root/usr/local/etc/webport/webport.env" "WEBPORT_TLS_MODE=acme"
+assert_contains "$root/usr/local/etc/webport/webport.env" "WEBPORT_DNS_PROVIDER=cloudflare"
+assert_contains "$root/usr/local/etc/traefik/traefik.env" "CF_DNS_API_TOKEN=test-secret"
+
 root="$tmp/local-ca"
 WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
 	--mode full --tls-mode local-ca --base-domain webport.localhost \

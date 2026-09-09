@@ -26,6 +26,9 @@ func TestRunCLIUsesProvidedStreamsForSimpleCommands(t *testing.T) {
 	if !strings.Contains(out.String(), "webport dev") {
 		t.Fatalf("help output = %q", out.String())
 	}
+	if !strings.Contains(out.String(), "webport upgrade") {
+		t.Fatalf("help output does not document upgrade = %q", out.String())
+	}
 }
 
 func TestRunCLIReportsUnknownCommandWithoutExiting(t *testing.T) {

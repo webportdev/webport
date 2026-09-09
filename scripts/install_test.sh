@@ -103,6 +103,35 @@ assert_contains "$SYSTEMCTL_LOG" "restart traefik.service"
 assert_contains "$SYSTEMCTL_LOG" "restart webport.service"
 assert_contains "$SYSTEMCTL_LOG" "enable --now webport-stack.target"
 
+root="$tmp/upgrade-public"
+WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
+	--mode full --provider cloudflare --base-domain dev.example.com \
+	--credentials-file "$cloudflare" --webport-source local --traefik-source local \
+	--artifact-dir "$artifacts" --non-interactive --yes
+WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
+	--upgrade --webport-source local --traefik-source local --artifact-dir "$artifacts" \
+	--non-interactive --yes
+assert_contains "$root/etc/webport/webport.env" "WEBPORT_BASE_DOMAIN=dev.example.com"
+assert_contains "$root/etc/webport/webport.env" "WEBPORT_TLS_MODE=acme"
+assert_contains "$root/etc/webport/webport.env" "WEBPORT_DNS_PROVIDER=cloudflare"
+assert_contains "$root/etc/traefik/traefik.env" "CF_DNS_API_TOKEN=test-secret"
+
+root="$tmp/upgrade-local"
+WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
+	--mode full --tls-mode local-ca --base-domain webport.localhost \
+	--webport-source local --traefik-source local --artifact-dir "$artifacts" \
+	--non-interactive --yes
+WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
+	--upgrade --webport-source local --traefik-source local --artifact-dir "$artifacts" \
+	--non-interactive --yes
+assert_contains "$root/etc/webport/webport.env" "WEBPORT_TLS_MODE=local-ca"
+assert_contains "$root/etc/webport/webport.env" "WEBPORT_BASE_DOMAIN=webport.localhost"
+
+expect_failure env WEBPORT_INSTALL_ROOT="$tmp/missing-upgrade" "$INSTALLER" \
+	--upgrade --webport-source local --traefik-source local --artifact-dir "$artifacts" \
+	--non-interactive --yes
+
+root="$tmp/upgrade-local"
 installed_installer="$root/usr/local/libexec/webport/installer/scripts/install.sh"
 webport_release_dir="$tmp/webport-release"
 mkdir -p "$webport_release_dir"

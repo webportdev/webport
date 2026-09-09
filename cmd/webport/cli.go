@@ -51,6 +51,7 @@ func writeHelp(out io.Writer) error {
 
 Usage:
   webport install [options]
+  webport upgrade [options]
   webport dev [options] [SERVICE]
   webport dev check|config|status|env|logs|stop [options]
   webport dev exec SERVICE -- COMMAND [ARG...]
@@ -855,11 +856,25 @@ func runInstaller(args []string) error {
 }
 
 func runInstallerTo(args []string, in io.Reader, out, errOut io.Writer) error {
-	candidates := []string{
-		filepath.Join("scripts", platformInstaller()),
-		filepath.Join("/usr/local/libexec/webport/installer/scripts", platformInstaller()),
-		filepath.Join(filepath.Dir(os.Args[0]), "scripts", platformInstaller()),
+	return runInstallerCommand(installerCandidates(false), args, in, out, errOut)
+}
+
+func runUpgradeTo(args []string, in io.Reader, out, errOut io.Writer) error {
+	commandArgs := append([]string{"--upgrade"}, args...)
+	return runInstallerCommand(installerCandidates(true), commandArgs, in, out, errOut)
+}
+
+func installerCandidates(preferInstalled bool) []string {
+	installed := filepath.Join("/usr/local/libexec/webport/installer/scripts", platformInstaller())
+	checkout := filepath.Join("scripts", platformInstaller())
+	binaryDir := filepath.Join(filepath.Dir(os.Args[0]), "scripts", platformInstaller())
+	if preferInstalled {
+		return []string{installed, checkout, binaryDir}
 	}
+	return []string{checkout, installed, binaryDir}
+}
+
+func runInstallerCommand(candidates, args []string, in io.Reader, out, errOut io.Writer) error {
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			command := exec.Command(candidate, args...)
