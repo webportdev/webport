@@ -51,6 +51,7 @@ func writeHelp(out io.Writer) error {
 
 Usage:
   webport install [options]
+  webport install --ai-skill [--yes]
   webport upgrade [options]
   webport dev [options] [SERVICE]
   webport dev check|config|status|env|logs|stop [options]

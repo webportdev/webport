@@ -64,10 +64,21 @@ The upgrade reuses the saved domain, TLS mode, DNS provider, zone, and
 credentials. It does not change local-CA trust unless `--trust-local-ca` is
 explicitly supplied.
 
+Install the Webport development skill for Codex, OpenCode, Pi, and Claude Code
+without installing or changing the Webport daemon stack:
+
+```bash
+webport install --ai-skill
+```
+
+If a skill file already exists, the command asks before replacing it. Use
+`--yes` for unattended replacement.
+
 ## Commands
 
 ```text
 webport install [options]                    Install or reconfigure the stack
+webport install --ai-skill [--yes]           Install the Webport agent skill
 webport upgrade [options]                    Upgrade using the saved configuration
 webport dev [options] -- COMMAND [ARG...]    Run and publish a dev server
 webport route --port PORT [options]          Publish an already-running server

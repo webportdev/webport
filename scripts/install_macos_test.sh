@@ -53,6 +53,17 @@ chmod +x "$artifacts/traefik"
 credentials="$tmp/cloudflare.env"
 printf 'CF_DNS_API_TOKEN=test-secret\n' >"$credentials"
 
+skill_home="$tmp/skill-home"
+HOME="$skill_home" "$INSTALLER" --ai-skill --non-interactive --yes
+for skill_path in \
+	"$skill_home/.codex/skills/webport-development/SKILL.md" \
+	"$skill_home/.config/opencode/skills/webport-development/SKILL.md" \
+	"$skill_home/.pi/agent/skills/webport-development/SKILL.md" \
+	"$skill_home/.claude/skills/webport-development/SKILL.md"; do
+	assert_file "$skill_path"
+	assert_contains "$skill_path" "name: webport-development"
+done
+
 root="$tmp/full"
 WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
 	--mode full --provider cloudflare --base-domain dev.example.com \

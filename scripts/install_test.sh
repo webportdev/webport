@@ -51,6 +51,7 @@ cp -R "$SCRIPT_DIR" "$bootstrap_bundle/scripts"
 cp -R "$SCRIPT_DIR/../systemd" "$bootstrap_bundle/systemd"
 cp -R "$SCRIPT_DIR/../macos" "$bootstrap_bundle/macos"
 cp -R "$SCRIPT_DIR/../traefik" "$bootstrap_bundle/traefik"
+cp -R "$SCRIPT_DIR/../skills" "$bootstrap_bundle/skills"
 tar -C "$bootstrap_release" -czf "$bootstrap_release/webport-installer_vtest.tar.gz" \
 	webport-installer_vtest
 tar -C "$artifacts" -czf "$bootstrap_release/webport_vtest_linux_amd64.tar.gz" \
@@ -68,6 +69,28 @@ WEBPORT_INSTALL_ROOT="$root" \
 	<"$SCRIPT_DIR/bootstrap-install.sh"
 assert_file "$root/usr/local/bin/webport"
 assert_file "$root/usr/local/libexec/webport/installer/scripts/install.sh"
+assert_file "$root/usr/local/libexec/webport/installer/skills/webport-development/SKILL.md"
+
+dry_skill_home="$tmp/dry-skill-home"
+HOME="$dry_skill_home" "$INSTALLER" --ai-skill --dry-run >/dev/null
+[[ ! -e "$dry_skill_home/.codex/skills/webport-development/SKILL.md" ]] ||
+	fail "--ai-skill --dry-run wrote a skill file"
+
+skill_home="$tmp/skill-home"
+HOME="$skill_home" "$INSTALLER" --ai-skill --non-interactive --yes
+for skill_path in \
+	"$skill_home/.codex/skills/webport-development/SKILL.md" \
+	"$skill_home/.config/opencode/skills/webport-development/SKILL.md" \
+	"$skill_home/.pi/agent/skills/webport-development/SKILL.md" \
+	"$skill_home/.claude/skills/webport-development/SKILL.md"; do
+	assert_file "$skill_path"
+	assert_contains "$skill_path" "name: webport-development"
+done
+printf 'user edit\n' >"$skill_home/.codex/skills/webport-development/SKILL.md"
+expect_failure env HOME="$skill_home" "$INSTALLER" --ai-skill --non-interactive
+assert_contains "$skill_home/.codex/skills/webport-development/SKILL.md" "user edit"
+HOME="$skill_home" "$INSTALLER" --ai-skill --non-interactive --yes
+assert_contains "$skill_home/.codex/skills/webport-development/SKILL.md" "name: webport-development"
 
 cloudflare="$tmp/cloudflare.env"
 printf 'CF_DNS_API_TOKEN=test-secret\n' >"$cloudflare"
@@ -145,6 +168,10 @@ WEBPORT_INSTALL_ROOT="$root" "$installed_installer" \
 assert_file "$root/usr/local/bin/webport"
 assert_file "$root/usr/local/bin/webportctl"
 assert_file "$root/usr/local/bin/webport-dns"
+
+installed_skill_home="$tmp/installed-skill-home"
+HOME="$installed_skill_home" "$installed_installer" --ai-skill --non-interactive --yes
+assert_file "$installed_skill_home/.claude/skills/webport-development/SKILL.md"
 
 root="$tmp/existing-traefik"
 mkdir -p "$root/usr/local/bin"

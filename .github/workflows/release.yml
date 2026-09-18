@@ -38,11 +38,12 @@ jobs:
           installer="dist/webport-installer_${version}"
           mkdir -p "$installer"
           cp README.md "$installer/"
-          mkdir -p "$installer/scripts" "$installer/systemd" "$installer/macos" "$installer/traefik"
+          mkdir -p "$installer/scripts" "$installer/systemd" "$installer/macos" "$installer/traefik" "$installer/skills/webport-development"
           cp scripts/install.sh scripts/install-macos.sh scripts/bootstrap-install.sh scripts/versions.env "$installer/scripts/"
           cp systemd/webport.service systemd/traefik.service systemd/webport-stack.target systemd/webport.env.example "$installer/systemd/"
           cp macos/traefik.yml.tmpl macos/run-traefik macos/run-webport macos/com.webport.traefik.plist macos/com.webport.webport.plist "$installer/macos/"
           cp traefik/traefik.yml.tmpl "$installer/traefik/"
+          cp skills/webport-development/SKILL.md "$installer/skills/webport-development/"
           tar -C dist -czf "dist/webport-installer_${version}.tar.gz" "webport-installer_${version}"
           (cd dist && sha256sum *.tar.gz > SHA256SUMS)
       - uses: softprops/action-gh-release@v2

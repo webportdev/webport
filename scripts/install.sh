@@ -26,6 +26,7 @@ NON_INTERACTIVE=0
 ASSUME_YES=0
 DRY_RUN=0
 UPGRADE=0
+AI_SKILL_ONLY=0
 ROOT=${WEBPORT_INSTALL_ROOT:-/}
 PLATFORM=${WEBPORT_INSTALL_PLATFORM:-linux}
 [[ "$PLATFORM" =~ ^(linux|darwin)$ ]] || {
@@ -34,11 +35,6 @@ PLATFORM=${WEBPORT_INSTALL_PLATFORM:-linux}
 }
 BUILD_DIR=
 INTERACTIVE_CREDENTIALS=
-
-if (( EUID == 0 )) && [[ "$ROOT" == / ]]; then
-	printf 'error: do not run this installer as root; rerun it without sudo\n' >&2
-	exit 1
-fi
 
 cleanup() {
 	[[ -z "$BUILD_DIR" ]] || rm -rf "$BUILD_DIR"
@@ -69,6 +65,9 @@ Binary sources:
 Automation:
   --dns-ipv4 ADDRESS --dns-ipv6 ADDRESS --dns-zone ZONE
   --non-interactive --yes --dry-run
+
+Agent skills:
+  --ai-skill                 Install the Webport skill for AI coding agents
 
 Upgrade:
   --upgrade                 Reuse the existing installation configuration
@@ -120,6 +119,37 @@ install_file() {
 	privileged install -m "$mode" "$source" "$destination"
 }
 
+install_ai_skill() {
+	local skill_name=webport-development source destination answer
+	local destinations
+	source="$REPO_DIR/skills/$skill_name/SKILL.md"
+	[[ -n "${HOME:-}" && "$HOME" != / ]] || die "HOME must point to a user home directory"
+	[[ -r "$source" ]] || die "agent skill asset is unavailable: $source"
+	destinations=(
+		"$HOME/.codex/skills/$skill_name"
+		"$HOME/.config/opencode/skills/$skill_name"
+		"$HOME/.pi/agent/skills/$skill_name"
+		"$HOME/.claude/skills/$skill_name"
+	)
+	for destination in "${destinations[@]}"; do
+		if (( DRY_RUN )); then
+			log "dry-run: install agent skill at $destination/SKILL.md"
+			continue
+		fi
+		if [[ -e "$destination/SKILL.md" || -L "$destination/SKILL.md" ]]; then
+			if (( ! ASSUME_YES )); then
+				(( NON_INTERACTIVE )) && die "agent skill already exists at $destination/SKILL.md; rerun with --yes"
+				[[ -t 0 ]] || die "replacing an agent skill requires an interactive stdin or --yes"
+				read -r -p "Replace $destination/SKILL.md? [y/N] " answer
+				[[ "$answer" =~ ^[Yy]$ ]] || { log "Skipped $destination/SKILL.md"; continue; }
+			fi
+		fi
+		mkdir -p "$destination"
+		install -m 0644 "$source" "$destination/SKILL.md"
+		log "Installed agent skill at $destination/SKILL.md"
+	done
+}
+
 while (($#)); do
 	case "$1" in
 		--mode) MODE=${2:-}; shift 2 ;;
@@ -145,12 +175,23 @@ while (($#)); do
 		--yes|-y) ASSUME_YES=1; shift ;;
 		--dry-run) DRY_RUN=1; shift ;;
 		--upgrade) UPGRADE=1; shift ;;
+		--ai-skill) AI_SKILL_ONLY=1; shift ;;
 		--help|-h) usage; exit 0 ;;
 		--caddy-*|--module-*|--provider-name|--token-env-var) die "Caddy options were removed; use Traefik options" ;;
 		--*token*|--*secret*|--*credential-value*) die "secret values must be supplied through --credentials-file" ;;
 		*) die "unknown argument: $1" ;;
 	esac
 done
+
+if (( AI_SKILL_ONLY )); then
+	install_ai_skill
+	exit 0
+fi
+
+if (( EUID == 0 )) && [[ "$ROOT" == / ]]; then
+	printf 'error: do not run this installer as root; rerun it without sudo\n' >&2
+	exit 1
+fi
 
 prompt_value() {
 	local variable=$1 prompt=$2 value
@@ -814,6 +855,7 @@ install_webport() {
 	install_file "$REPO_DIR/macos/run-webport" "$installer_assets/macos/run-webport" 755
 	install_file "$REPO_DIR/macos/com.webport.traefik.plist" "$installer_assets/macos/com.webport.traefik.plist" 644
 	install_file "$REPO_DIR/macos/com.webport.webport.plist" "$installer_assets/macos/com.webport.webport.plist" 644
+	install_file "$REPO_DIR/skills/webport-development/SKILL.md" "$installer_assets/skills/webport-development/SKILL.md" 644
 	if [[ "$PLATFORM" == darwin ]]; then
 		if [[ "$ROOT" == / && "$DRY_RUN" == 0 ]] && ! id -u _webport >/dev/null 2>&1; then
 			local service_uid=
