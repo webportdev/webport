@@ -156,13 +156,19 @@ func LogFiles(options Options, service string) ([]string, error) {
 	if statusErr == nil {
 		switch stateValue := value.(type) {
 		case state.LiveState:
-			if paths := selectLogPaths(stateValue.LogPaths, service); len(paths) > 0 {
-				return paths, nil
+			if service != "" {
+				if _, ok := stateValue.Services[service]; !ok {
+					return nil, fmt.Errorf("unknown service %q", service)
+				}
 			}
+			return selectedLogPaths(stateValue.LogPaths, service)
 		case state.LastSession:
-			if paths := selectLogPaths(stateValue.LogPaths, service); len(paths) > 0 {
-				return paths, nil
+			if service != "" {
+				if _, ok := stateValue.FinalStates[service]; !ok {
+					return nil, fmt.Errorf("unknown service %q", service)
+				}
 			}
+			return selectedLogPaths(stateValue.LogPaths, service)
 		}
 	}
 	cfg, err := config.Load(config.Options{CurrentDir: options.CurrentDir, ConfigPath: options.ConfigPath})
@@ -175,6 +181,9 @@ func LogFiles(options Options, service string) ([]string, error) {
 	}
 	services := make([]string, 0, len(cfg.Services))
 	if service != "" {
+		if _, ok := cfg.Services[service]; !ok {
+			return nil, fmt.Errorf("unknown service %q", service)
+		}
 		services = append(services, service)
 	} else {
 		for name := range cfg.Services {
@@ -185,7 +194,7 @@ func LogFiles(options Options, service string) ([]string, error) {
 	var paths []string
 	for _, name := range services {
 		settings := cfg.Services[name].Logs
-		if settings == nil || settings.Path == "" || settings.Destination == "none" {
+		if settings == nil || settings.Destination == "" || settings.Destination == "session" || settings.Destination == "none" || settings.Path == "" {
 			continue
 		}
 		path, resolveErr := id.ResolvePath(settings.Path)
@@ -203,9 +212,23 @@ func LogFiles(options Options, service string) ([]string, error) {
 		}
 	}
 	if len(paths) == 0 {
-		return nil, errors.New("no configured logs for development session")
+		if service != "" && cfg.Services[service].Logs != nil && cfg.Services[service].Logs.Destination == "none" {
+			return nil, fmt.Errorf("logging is disabled for service %q", service)
+		}
+		return nil, errors.New("no live or retained logs for development session")
 	}
 	return paths, nil
+}
+
+func selectedLogPaths(paths map[string]string, service string) ([]string, error) {
+	selected := selectLogPaths(paths, service)
+	if len(selected) > 0 {
+		return selected, nil
+	}
+	if service != "" {
+		return nil, fmt.Errorf("logging is disabled for service %q", service)
+	}
+	return nil, errors.New("development session has no retained logs")
 }
 
 func StreamLogs(ctx context.Context, options Options, service string, follow bool, output io.Writer) error {
@@ -255,19 +278,6 @@ func streamFile(ctx context.Context, path string, follow bool, output io.Writer)
 	defer func() { _ = file.Close() }()
 	var offset int64
 	for {
-		if follow {
-			if replacement, statErr := os.Open(path); statErr == nil {
-				currentInfo, currentErr := file.Stat()
-				replacementInfo, replacementErr := replacement.Stat()
-				if currentErr == nil && replacementErr == nil && !os.SameFile(currentInfo, replacementInfo) {
-					_ = file.Close()
-					file = replacement
-					offset = 0
-				} else {
-					_ = replacement.Close()
-				}
-			}
-		}
 		if info, statErr := file.Stat(); statErr == nil && offset > info.Size() {
 			offset = 0
 		}
@@ -281,6 +291,17 @@ func streamFile(ctx context.Context, path string, follow bool, output io.Writer)
 		offset += count
 		if !follow {
 			return nil
+		}
+		if replacement, statErr := os.Open(path); statErr == nil {
+			currentInfo, currentErr := file.Stat()
+			replacementInfo, replacementErr := replacement.Stat()
+			if currentErr == nil && replacementErr == nil && !os.SameFile(currentInfo, replacementInfo) {
+				_ = file.Close()
+				file = replacement
+				offset = 0
+				continue
+			}
+			_ = replacement.Close()
 		}
 		timer := time.NewTimer(100 * time.Millisecond)
 		select {

@@ -314,6 +314,7 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	}
 	live.ControlPath, live.ControlToken = control.Path(), control.Token()
 	last := state.LastSession{SessionID: id.SessionID, Worktree: id.WorktreeRoot, Profile: resolvedPlan.Profile, StartedAt: live.StartedAt}
+	retainLast := cfg.Session.RetainLastSummary == nil || *cfg.Session.RetainLastSummary
 	defer func() {
 		if options.StopSignal != nil && ctx.Err() != nil && last.Initiating == "" {
 			if sig := options.StopSignal(); sig != nil {
@@ -332,10 +333,15 @@ func Run(ctx context.Context, options Options) (runErr error) {
 				last.ExitCode = 1
 			}
 		}
-		if cfg.Session.RetainLastSummary == nil || *cfg.Session.RetainLastSummary {
+		if retainLast {
 			runErr = errors.Join(runErr, stateStore.WriteLast(last))
+		} else {
+			runErr = errors.Join(runErr, stateStore.RemoveLast())
 		}
 		runErr = errors.Join(runErr, stateStore.RemoveLive())
+		if !retainLast {
+			runErr = errors.Join(runErr, stateStore.RemoveSessionLogs(id.SessionID))
+		}
 	}()
 	exportPaths := make(map[string]string)
 	for shell, path := range cfg.Session.Exports {
@@ -361,7 +367,11 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	}
 	live.Exports = exportPaths
 	fmt.Fprint(options.Out, resolvedPlan.Human())
-	logManager, err := logs.New(id.ConfigDirectory, options.Out, false)
+	sessionLogDirectory, err := stateStore.SessionLogDirectory(id.SessionID)
+	if err != nil {
+		return err
+	}
+	logManager, err := logs.New(id.ConfigDirectory, sessionLogDirectory, options.Out, false)
 	if err != nil {
 		return err
 	}
@@ -376,6 +386,9 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	}
 	live.LogPaths = logManager.Paths()
 	if err := stateStore.WriteLive(live); err != nil {
+		return err
+	}
+	if err := stateStore.PruneSessionLogs(id.SessionID); err != nil {
 		return err
 	}
 	var routeManager *routeleases.Manager

@@ -166,7 +166,7 @@ func Build(cfg config.Config, id identity.Identity, options BuildOptions) (Plan,
 			Name: name, Command: append([]string(nil), item.Command...), Shell: item.Shell,
 			WorkingDir: workingDir, Env: copyValues(item.Env), DependsOn: append([]string(nil), item.DependsOn...),
 			Completion: completion(item), Ready: item.Ready, Endpoints: copyStrings(item.Endpoints),
-			Logs: item.Logs, Shutdown: item.Shutdown, Route: item.Route,
+			Logs: effectiveLogs(item.Logs), Shutdown: item.Shutdown, Route: item.Route,
 		}
 	}
 
@@ -641,12 +641,40 @@ func validateService(name string, service config.Service, id identity.Identity) 
 		if service.Logs.MaxBytes < 0 || service.Logs.Backups < 0 {
 			return fmt.Errorf("service %q: invalid log rotation bounds", name)
 		}
-		if service.Logs.Destination != "" && service.Logs.Destination != "none" && service.Logs.Destination != "file" && service.Logs.Destination != "directory" {
+		if service.Logs.Destination != "" && service.Logs.Destination != "session" && service.Logs.Destination != "none" && service.Logs.Destination != "file" && service.Logs.Destination != "directory" {
 			return fmt.Errorf("service %q has invalid log destination %q", name, service.Logs.Destination)
+		}
+		if (service.Logs.Destination == "" || service.Logs.Destination == "session") && service.Logs.Path != "" {
+			return fmt.Errorf("service %q: session log destination cannot define a path", name)
 		}
 	}
 	_ = id
 	return nil
+}
+
+func effectiveLogs(value *config.Logs) *config.Logs {
+	result := config.Logs{}
+	if value != nil {
+		result = *value
+	}
+	if result.Destination == "" {
+		result.Destination = "session"
+	}
+	if result.Mode == "" {
+		result.Mode = "truncate"
+	}
+	if result.Streams == "" {
+		result.Streams = "combined"
+	}
+	if result.Destination == "session" {
+		if result.MaxBytes == 0 {
+			result.MaxBytes = 10 * 1024 * 1024
+		}
+		if result.Backups == 0 {
+			result.Backups = 2
+		}
+	}
+	return &result
 }
 
 func completion(service config.Service) string {

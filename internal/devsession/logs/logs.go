@@ -17,11 +17,12 @@ import (
 )
 
 type Manager struct {
-	root  string
-	out   io.Writer
-	color bool
-	mu    sync.Mutex
-	sinks map[string]*Sink
+	root        string
+	sessionRoot string
+	out         io.Writer
+	color       bool
+	mu          sync.Mutex
+	sinks       map[string]*Sink
 }
 
 type Sink struct {
@@ -35,7 +36,7 @@ type Sink struct {
 	mu      sync.Mutex
 }
 
-func New(root string, out io.Writer, color bool) (*Manager, error) {
+func New(root, sessionRoot string, out io.Writer, color bool) (*Manager, error) {
 	if root == "" {
 		return nil, errors.New("log root is required")
 	}
@@ -43,10 +44,16 @@ func New(root string, out io.Writer, color bool) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	if sessionRoot != "" {
+		sessionRoot, err = filepath.Abs(sessionRoot)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if out == nil {
 		out = io.Discard
 	}
-	return &Manager{root: root, out: out, color: color, sinks: make(map[string]*Sink)}, nil
+	return &Manager{root: root, sessionRoot: sessionRoot, out: out, color: color, sinks: make(map[string]*Sink)}, nil
 }
 
 func (m *Manager) Sink(service string, settings *config.Logs) (command.OutputSink, error) {
@@ -104,16 +111,36 @@ func (m *Manager) Close() error {
 }
 
 func (s *Sink) open() error {
-	if s.config == nil || s.config.Destination == "" || s.config.Destination == "none" || s.config.Path == "" {
+	if s.config == nil || s.config.Destination == "none" {
 		return nil
 	}
-	path := s.config.Path
-	if s.config.Destination == "directory" {
-		path = filepath.Join(path, s.service+".log")
-	}
-	path, err := safePath(s.manager.root, path)
-	if err != nil {
-		return err
+	var path string
+	switch s.config.Destination {
+	case "session", "":
+		if s.manager.sessionRoot == "" {
+			return errors.New("session log root is required")
+		}
+		path = filepath.Join(s.manager.sessionRoot, s.service+".log")
+		var err error
+		path, err = safePath(s.manager.sessionRoot, path)
+		if err != nil {
+			return err
+		}
+	case "file", "directory":
+		if s.config.Path == "" {
+			return nil
+		}
+		path = s.config.Path
+		if s.config.Destination == "directory" {
+			path = filepath.Join(path, s.service+".log")
+		}
+		var err error
+		path, err = safePath(s.manager.root, path)
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unsupported log destination %q", s.config.Destination)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

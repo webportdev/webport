@@ -110,7 +110,7 @@ webport dev config --format json         # print managed session values
 webport dev status --format json         # inspect live or retained state
 webport dev env --shell fish             # render managed live environment
 webport dev env --include-inherited      # include inherited process variables
-webport dev logs backend --follow        # follow a configured plain log
+webport dev logs backend --follow        # follow the service log
 webport dev exec backend -- go test ./... # run a one-off command in the service context
 webport dev stop                         # request graceful foreground shutdown
 webport dev clean --secrets              # explicitly remove project secrets
@@ -128,6 +128,10 @@ show the inherited process environment.
 Configured export files intentionally contain resolved environment values while
 the session is active, are mode `0600`, and are removed during clean shutdown.
 Child output is mirrored as-is, so applications should avoid printing secrets.
+Configured sessions keep bounded per-service logs by default in Webport's
+private runtime state, making `webport dev logs SERVICE` available without a
+`logs` block. Set `destination: none` to opt out, or choose `file`/`directory`
+for project-controlled log paths.
 
 ## Public domains
 

@@ -30,6 +30,7 @@ type Store struct {
 	LastPath     string
 	LockPath     string
 	SecretPath   string
+	LogRoot      string
 	lock         *fileLock
 	mu           sync.Mutex
 }
@@ -117,6 +118,7 @@ func NewStore(worktreeRoot, directory string) (Store, error) {
 		LastPath:     prefix + ".last.json",
 		LockPath:     prefix + ".lock",
 		SecretPath:   prefix + ".secrets.json",
+		LogRoot:      prefix + ".logs",
 	}, nil
 }
 
@@ -185,6 +187,13 @@ func (s *Store) RemoveLive() error {
 	return nil
 }
 
+func (s *Store) RemoveLast() error {
+	if err := os.Remove(s.LastPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func (s *Store) WriteLast(value LastSession) error {
 	value.SchemaVersion = 1
 	return writeJSONAtomic(s.LastPath, value)
@@ -192,6 +201,48 @@ func (s *Store) WriteLast(value LastSession) error {
 
 func (s *Store) ReadLive() (LiveState, error)   { return readJSON[LiveState](s.LivePath) }
 func (s *Store) ReadLast() (LastSession, error) { return readJSON[LastSession](s.LastPath) }
+
+func (s *Store) SessionLogDirectory(sessionID string) (string, error) {
+	if sessionID == "" || filepath.Base(sessionID) != sessionID || sessionID == "." || sessionID == ".." {
+		return "", errors.New("invalid session ID for log directory")
+	}
+	return filepath.Join(s.LogRoot, sessionID), nil
+}
+
+func (s *Store) PruneSessionLogs(keepSessionID string) error {
+	keep, err := s.SessionLogDirectory(keepSessionID)
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(s.LogRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		path := filepath.Join(s.LogRoot, entry.Name())
+		if path == keep {
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove old session logs %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) RemoveSessionLogs(sessionID string) error {
+	path, err := s.SessionLogDirectory(sessionID)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove session logs %s: %w", path, err)
+	}
+	return nil
+}
 
 type lockedError struct{ Path string }
 

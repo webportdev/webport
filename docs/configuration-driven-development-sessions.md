@@ -84,7 +84,7 @@ services:
     endpoints:
       local: http://127.0.0.1:${ports.api}
     logs:
-      destination: file        # none (default), file, or directory
+      destination: file        # session (default), none, file, or directory
       path: .webport/api.log
       mode: truncate            # truncate (default) or append
       streams: combined         # combined (default), separate
@@ -264,7 +264,8 @@ The session commands are distinct from daemon-level `webport status` and
 * `env` renders Bash/POSIX/Zsh, Fish, or JSON environment data. It shows
   Webport-managed values by default; `--include-inherited` restores the full
   resolved environment;
-* `logs` reads configured paths and may follow active files;
+* `logs` reads paths from live or retained session metadata and may follow
+  active files;
 * `exec` runs a one-off command with the selected service environment;
 * `stop` asks the foreground owner to run graceful shutdown; and
 * `clean --secrets` explicitly removes project-lifetime secrets.
@@ -285,11 +286,19 @@ Filenames are keyed by a digest of the canonical worktree root. The live file
 is removed after orderly shutdown, while the redacted last-session record is
 replaced according to `session.retain_last_summary`.
 
-Logs and exports are relative to the primary configuration directory unless an
-absolute path is explicitly configured. Project-lifetime secrets are stored in
-the per-user runtime directory beside the hashed worktree state, never under
-the checkout. Logs and exports are mode `0600`; log files may remain after
-shutdown, exports are removed, and project secrets remain only until
+The default `session` log destination writes one combined, mode-`0600` file per
+service beneath Webport's worktree-scoped runtime state, not the checkout. It
+rotates at 10 MiB with two backups and remains available for the latest retained
+session. A new live session removes older managed logs; disabling
+`retain_last_summary` removes its managed logs at shutdown. Explicit `none`
+keeps terminal-only output. Explicit `file` and `directory` paths are relative
+to the primary configuration directory unless an absolute path is configured,
+retain their configured stream and rotation behavior, and are never removed by
+managed-log cleanup. `path` is not accepted for `session`; select `file` or
+`directory` to control the location. Exports are mode `0600` and removed on
+shutdown.
+Project-lifetime secrets are stored in the per-user runtime directory beside
+the hashed worktree state, never under the checkout, and remain only until
 `webport dev clean --secrets`. Webport does
 not provide detached sessions, infer state from Docker/Podman/Compose, capture
 unconfigured runtime-assigned ports, perform continuous health checks, scrub
@@ -315,7 +324,7 @@ docker compose up -d
 webport dev -- ./scripts/wait-for-dev-stack
 ```
 
-From another terminal, inspect or follow the configured plain log mirror:
+From another terminal, inspect or follow the plain per-service log:
 
 ```bash
 webport dev status --format json

@@ -123,6 +123,33 @@ func TestBuildSelectedServiceIncludesDependenciesOnly(t *testing.T) {
 	}
 }
 
+func TestBuildAppliesManagedSessionLogDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Config{
+		Profiles: map[string]config.Profile{"default": {Services: []string{"api", "quiet"}}},
+		Services: map[string]config.Service{
+			"api":   {Command: []string{"api"}},
+			"quiet": {Command: []string{"quiet"}, Logs: &config.Logs{Destination: "none"}},
+		},
+	}
+	got, err := Build(cfg, identity.Identity{ConfigDirectory: dir, WorktreeRoot: dir}, BuildOptions{Lookup: lookupFake{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := got.Services["api"].Logs
+	if logs == nil || logs.Destination != "session" || logs.Mode != "truncate" || logs.Streams != "combined" || logs.MaxBytes != 10*1024*1024 || logs.Backups != 2 {
+		t.Fatalf("default logs = %+v", logs)
+	}
+	if got.Services["quiet"].Logs.Destination != "none" {
+		t.Fatalf("explicit log opt-out = %+v", got.Services["quiet"].Logs)
+	}
+
+	cfg.Services["api"] = config.Service{Command: []string{"api"}, Logs: &config.Logs{Destination: "session", Path: "api.log"}}
+	if _, err := Build(cfg, identity.Identity{ConfigDirectory: dir, WorktreeRoot: dir}, BuildOptions{Lookup: lookupFake{}}); err == nil || !strings.Contains(err.Error(), "cannot define a path") {
+		t.Fatalf("session logs with path error = %v", err)
+	}
+}
+
 func TestBuildAllowsRouteBackedDiscoveredPortForRuntimeActivation(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Config{
@@ -148,9 +175,9 @@ func TestJSONIncludesDetailedServiceLifecycleSettings(t *testing.T) {
 		Services: map[string]config.Service{"api": {
 			Command: []string{"api"}, Completion: "exit",
 			Ready: &config.Ready{TCP: "127.0.0.1:8000"}, Endpoints: map[string]string{"local": "http://127.0.0.1:8000"},
-			Logs: &config.Logs{Destination: "file", Path: "api.log", Mode: "append"},
+			Logs:     &config.Logs{Destination: "file", Path: "api.log", Mode: "append"},
 			Shutdown: &config.Shutdown{Command: []string{"stop-api"}, Timeout: config.Duration(2 * time.Second)},
-			Route: &config.Route{Project: "app", Branch: "main", Port: "api", Optional: true, Export: map[string]string{"url": "API_URL"}},
+			Route:    &config.Route{Project: "app", Branch: "main", Port: "api", Optional: true, Export: map[string]string{"url": "API_URL"}},
 		}},
 	}
 	got, err := Build(cfg, identity.Identity{Project: "app", Branch: "main", WorktreeRoot: dir, ConfigDirectory: dir}, BuildOptions{Lookup: lookupFake{}})

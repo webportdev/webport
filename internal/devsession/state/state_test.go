@@ -81,6 +81,47 @@ func TestControlEndpointAuthenticatesAndUsesSchema(t *testing.T) {
 	}
 }
 
+func TestStoreManagesLatestSessionLogs(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "worktree"), filepath.Join(t.TempDir(), "runtime"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDirectory, err := store.SessionLogDirectory("old-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentDirectory, err := store.SessionLogDirectory("current-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, directory := range []string{oldDirectory, currentDirectory} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "api.log"), []byte("log\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.PruneSessionLogs("current-session"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldDirectory); !os.IsNotExist(err) {
+		t.Fatalf("old session logs remain: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(currentDirectory, "api.log")); err != nil {
+		t.Fatalf("current session logs missing: %v", err)
+	}
+	if err := store.RemoveSessionLogs("current-session"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(currentDirectory); !os.IsNotExist(err) {
+		t.Fatalf("current session logs remain: %v", err)
+	}
+	if _, err := store.SessionLogDirectory("../outside"); err == nil {
+		t.Fatal("unsafe session ID accepted")
+	}
+}
+
 func TestAcquireRemovesStaleLiveStateWithoutSignalingRecordedPID(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "worktree"), filepath.Join(t.TempDir(), "runtime"))
 	if err != nil {

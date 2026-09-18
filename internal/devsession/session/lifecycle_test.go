@@ -250,13 +250,27 @@ func TestStreamFileFollowsRotatedLog(t *testing.T) {
 	if err := waitForFixtureCondition(time.Second, func() bool { return strings.Contains(output.String(), "before") }); err != nil {
 		t.Fatal(err)
 	}
+	old, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.WriteString("during rotation\n"); err != nil {
+		_ = old.Close()
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Rename(path, path+".1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("after\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := waitForFixtureCondition(time.Second, func() bool { return strings.Contains(output.String(), "after") }); err != nil {
+	if err := waitForFixtureCondition(time.Second, func() bool {
+		value := output.String()
+		return strings.Contains(value, "during rotation") && strings.Contains(value, "after")
+	}); err != nil {
 		t.Fatal(err)
 	}
 	cancel()
@@ -394,6 +408,13 @@ func assertFixtureArtifacts(t *testing.T, root, config string, output *safeBuffe
 	}
 	if _, err := lastStore.ReadLive(); !os.IsNotExist(err) {
 		t.Fatalf("live state remains: %v", err)
+	}
+	streamed := &safeBuffer{}
+	if err := StreamLogs(context.Background(), Options{ConfigPath: config}, "backend", false, streamed); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(streamed.String(), "backend online") {
+		t.Fatalf("streamed directory log = %q", streamed.String())
 	}
 	artifacts := []string{output.String(), string(lastJSON), string(statusJSON), string(configJSON)}
 	for _, path := range []string{

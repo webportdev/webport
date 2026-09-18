@@ -14,7 +14,7 @@ import (
 func TestManagerPrefixesMirrorsTailsAndSeparatesStreams(t *testing.T) {
 	root := t.TempDir()
 	var terminal bytes.Buffer
-	manager, err := New(root, &terminal, true)
+	manager, err := New(root, filepath.Join(root, "session"), &terminal, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestManagerPrefixesMirrorsTailsAndSeparatesStreams(t *testing.T) {
 
 func TestManagerRotatesAndRejectsOutsidePaths(t *testing.T) {
 	root := t.TempDir()
-	manager, err := New(root, nil, false)
+	manager, err := New(root, filepath.Join(root, "session"), nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,11 +57,41 @@ func TestManagerRotatesAndRejectsOutsidePaths(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "api.log.1")); err != nil {
 		t.Fatalf("rotated log missing: %v", err)
 	}
-	if _, err := New(root, nil, false); err != nil {
+	if _, err := New(root, filepath.Join(root, "session"), nil, false); err != nil {
 		t.Fatal(err)
 	}
-	manager, _ = New(root, nil, false)
+	manager, _ = New(root, filepath.Join(root, "session"), nil, false)
 	if _, err := manager.Sink("api", &config.Logs{Destination: "file", Path: "../outside.log"}); err == nil {
 		t.Fatal("outside log path accepted")
+	}
+}
+
+func TestManagerWritesSessionLogsOutsideConfigurationRoot(t *testing.T) {
+	root := t.TempDir()
+	sessionRoot := filepath.Join(t.TempDir(), "session")
+	manager, err := New(root, sessionRoot, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink, err := manager.Sink("api", &config.Logs{Destination: "session", Mode: "truncate", Streams: "combined"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.WriteOutput(command.OutputEvent{Stream: "stdout", Raw: []byte("ready\n"), Line: "ready", Complete: true})
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	paths := manager.Paths()
+	want := filepath.Join(sessionRoot, "api.log")
+	if paths["api"] != want {
+		t.Fatalf("session log path = %q, want %q", paths["api"], want)
+	}
+	data, err := os.ReadFile(want)
+	if err != nil || string(data) != "ready\n" {
+		t.Fatalf("session log = %q, %v", data, err)
+	}
+	info, err := os.Stat(want)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("session log mode = %v, %v", info, err)
 	}
 }
