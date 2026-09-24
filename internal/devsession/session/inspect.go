@@ -22,6 +22,67 @@ import (
 	"github.com/webportdev/webport/internal/devsession/state"
 )
 
+var ErrNoLiveSession = errors.New("no live development session")
+
+type InspectionRoute struct {
+	Service string `json:"service,omitempty"`
+	Project string `json:"project"`
+	Branch  string `json:"branch"`
+	URL     string `json:"url"`
+}
+
+type LiveInspection struct {
+	Project     string                       `json:"project"`
+	Branch      string                       `json:"branch"`
+	Worktree    string                       `json:"worktree"`
+	Profile     string                       `json:"profile"`
+	Routes      []InspectionRoute            `json:"routes"`
+	Environment map[string]map[string]string `json:"environment"`
+}
+
+// InspectLive reads only the active configured session for the selected worktree.
+func InspectLive(ctx context.Context, options Options) (LiveInspection, error) {
+	cfg, err := config.Load(config.Options{CurrentDir: options.CurrentDir, ConfigPath: options.ConfigPath})
+	if err != nil {
+		return LiveInspection{}, err
+	}
+	id, err := identity.Resolve(cfg, options.CurrentDir, nil)
+	if err != nil {
+		return LiveInspection{}, err
+	}
+	store, err := state.NewStore(id.WorktreeRoot, "")
+	if err != nil {
+		return LiveInspection{}, err
+	}
+	live, err := store.ReadLive()
+	if errors.Is(err, os.ErrNotExist) {
+		return LiveInspection{}, ErrNoLiveSession
+	}
+	if err != nil {
+		return LiveInspection{}, err
+	}
+	response, err := state.Dial(ctx, live.ControlPath, live.ControlToken, state.Request{
+		Operation: "inspect", Payload: map[string]any{
+			"show_sensitive": options.ShowSensitive, "include_inherited": options.IncludeInherited,
+		},
+	})
+	if err != nil {
+		return LiveInspection{}, fmt.Errorf("inspect live session: %w", err)
+	}
+	if !response.OK {
+		return LiveInspection{}, fmt.Errorf("inspect live session: %s", response.Error)
+	}
+	encoded, err := json.Marshal(response.Payload["inspection"])
+	if err != nil {
+		return LiveInspection{}, err
+	}
+	var result LiveInspection
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		return LiveInspection{}, err
+	}
+	return result, nil
+}
+
 func InspectConfig(ctx context.Context, options Options) (plan.Plan, error) {
 	cfg, err := config.Load(config.Options{CurrentDir: options.CurrentDir, ConfigPath: options.ConfigPath})
 	if err != nil {

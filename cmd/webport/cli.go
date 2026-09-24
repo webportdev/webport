@@ -59,6 +59,7 @@ Usage:
   webport dev clean --secrets [options]
   webport dev [options] -- COMMAND [ARG...]
   webport route --port PORT [options]
+  webport inspect [--config PATH] [--format json] [options]
   webport list
   webport status
   webport doctor
@@ -72,6 +73,8 @@ Run "webport dev -- npm run dev" from a Git checkout to publish a server.
 Run "webport dev" in a checkout with .webport.yaml to use a configured
 foreground session. Use "webport dev status" or "webport dev logs --follow"
 from another terminal while it runs.
+Use "webport inspect" to see active URLs and environment for this project.
+Use "webport inspect --config PATH" for another active configured project.
 Use "webport dev config --include-inherited" or
 "webport dev env --include-inherited" to include inherited process environment
 variables in inspection output.

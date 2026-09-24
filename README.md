@@ -82,6 +82,7 @@ webport install --ai-skill [--yes]           Install the Webport agent skill
 webport upgrade [options]                    Upgrade using the saved configuration
 webport dev [options] -- COMMAND [ARG...]    Run and publish a dev server
 webport route --port PORT [options]          Publish an already-running server
+webport inspect [--config PATH] [options]    Show active URLs and project environment
 webport list                                 List active routes
 webport status                               Show daemon/publication state
 webport doctor                               Test API, TLS, trust, and DNS
@@ -103,6 +104,27 @@ Common route options:
 | `--port` | Inferred by `webport dev`; required by `webport route` |
 | `--ttl` | `30s` |
 | `--api` | `http://127.0.0.1:8080` |
+
+To check the current project's active HTTPS URLs and environment from another
+terminal, run:
+
+```bash
+webport inspect
+webport inspect --format json
+webport inspect --config ../other-project/.webport.yaml
+```
+
+For a configured session, `inspect` groups live environment values by service
+and redacts sensitive values. Use `--show-sensitive` to reveal them or
+`--include-inherited` to include inherited process variables. The `--config`
+path selects a specific active worktree, even when called from another
+project. A project started with `webport dev -- COMMAND` has no configured
+environment; `inspect` finds its current Git route and displays the active URL
+and route context derived from it. These derived values are not a reading of
+the child process environment. If no session or route is active, `inspect`
+reports that state; use `webport dev config` to preview an inactive configured
+project. `webport list` shows all active routes, including routes started with
+an explicit identity that differs from the current Git project or branch.
 
 ## Configuration-driven sessions
 

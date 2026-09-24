@@ -17,6 +17,9 @@ import (
 
 const Version = 1
 
+// ErrNotFound reports that no session configuration exists in the worktree.
+var ErrNotFound = errors.New("file not found before worktree root")
+
 type Options struct {
 	CurrentDir   string
 	ConfigPath   string
@@ -297,7 +300,7 @@ func locatePrimary(opts Options) (string, error) {
 			break
 		}
 	}
-	return "", sourceError(filepath.Join(start, ".webport.yaml"), nil, "", errors.New("file not found before worktree root"))
+	return "", sourceError(filepath.Join(start, ".webport.yaml"), nil, "", ErrNotFound)
 }
 
 func withinRoot(path, root string) bool {

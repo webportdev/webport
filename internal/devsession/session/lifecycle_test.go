@@ -205,6 +205,32 @@ func TestConfiguredLifecycleFixtureIsConcurrentAndSecretSafe(t *testing.T) {
 	if len(seen) != 4 {
 		t.Fatalf("route registrations = %+v", seen)
 	}
+	for _, fixture := range running {
+		var inspected LiveInspection
+		if err := waitForFixtureCondition(5*time.Second, func() bool {
+			var inspectErr error
+			inspected, inspectErr = InspectLive(context.Background(), Options{ConfigPath: fixture.config})
+			return inspectErr == nil && len(inspected.Routes) == 2
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if inspected.Project != fixture.name || inspected.Environment["frontend"]["BACKEND_URL"] == "" {
+			t.Fatalf("inspection missing project or service values: %+v", inspected)
+		}
+		if inspected.Environment["frontend"]["PROJECT_SECRET"] != "<redacted>" || inspected.Environment["backend"]["PROJECT_SECRET"] != "<redacted>" {
+			t.Fatalf("inspection exposed configured secret: %+v", inspected.Environment)
+		}
+		if _, ok := inspected.Environment["frontend"]["PATH"]; ok {
+			t.Fatal("inspection included inherited environment by default")
+		}
+		visible, err := InspectLive(context.Background(), Options{ConfigPath: fixture.config, ShowSensitive: true, IncludeInherited: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if visible.Environment["frontend"]["PROJECT_SECRET"] == "<redacted>" || visible.Environment["frontend"]["PATH"] == "" {
+			t.Fatalf("explicit inspection flags were ignored: %+v", visible.Environment["frontend"])
+		}
+	}
 	for _, request := range seen {
 		if request.ClientID == "" || request.Project == "" || request.Branch == "" || request.Port == 0 {
 			t.Fatalf("incomplete route registration = %+v", request)

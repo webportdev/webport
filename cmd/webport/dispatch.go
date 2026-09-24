@@ -28,6 +28,8 @@ func runCLI(args []string, in io.Reader, out, errOut io.Writer) error {
 		return runDevWithIO(args[1:], in, out, errOut)
 	case "route":
 		return runRoute(args[1:])
+	case "inspect":
+		return runInspect(args[1:], out, errOut)
 	case "list":
 		return printEndpointTo(defaultAPI, "/routes", out)
 	case "status":

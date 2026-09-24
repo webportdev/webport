@@ -19,10 +19,22 @@ Use Webport for local development servers and foreground development sessions.
 
 ## Inspect and troubleshoot
 
-- Use `webport dev status`, `webport dev logs SERVICE`, and `webport dev env`
-  for a configured session.
-- Use `webport list`, `webport status`, `webport config`, and `webport doctor`
-  for daemon and route problems.
+- Run `webport inspect` from the current project to see active HTTPS URLs and
+  environment values. For another active configured worktree, use
+  `webport inspect --config /path/to/.webport.yaml`.
+- A configured session's inspection groups environment values by service and
+  redacts sensitive values by default. Use `--format json` for structured
+  output, `--show-sensitive` only when values are needed, and
+  `--include-inherited` when the process environment matters.
+- For a wrapper route without `.webport.yaml`, inspection shows the active URL
+  and route context derived from it. It cannot read the child's full
+  environment. Use `webport list` to find all active routes, including routes
+  with identities overridden from Git defaults.
+- Use `webport dev status` for live or retained session state,
+  `webport dev logs SERVICE` for logs, and `webport dev env` for shell-ready
+  environment output. Use `webport dev config` to preview an inactive session.
+- Use `webport status`, `webport config`, and `webport doctor` for daemon and
+  route problems.
 - Use `webport dev stop` to request a graceful stop from another terminal.
 - If a route is missing, first check that the client or session is still
   running and renewing its lease; manual routes expire unless refreshed.

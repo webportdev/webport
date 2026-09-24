@@ -11,9 +11,24 @@ import (
 
 	"github.com/webportdev/webport/internal/devsession/config"
 	"github.com/webportdev/webport/internal/devsession/identity"
+	"github.com/webportdev/webport/internal/devsession/plan"
+	routeleases "github.com/webportdev/webport/internal/devsession/routes"
 	"github.com/webportdev/webport/internal/devsession/secrets"
 	"github.com/webportdev/webport/internal/devsession/state"
 )
+
+func TestActiveInspectionRoutesExcludesPendingAndRecovering(t *testing.T) {
+	snapshot := map[string]routeleases.Entry{
+		"z":          {State: routeleases.Active, Route: plan.Route{Project: "app", Branch: "main", URL: "https://z.test"}},
+		"a":          {State: routeleases.Active, Route: plan.Route{Project: "app", Branch: "main", URL: "https://a.test"}},
+		"pending":    {State: routeleases.Pending, Route: plan.Route{URL: "https://pending.test"}},
+		"recovering": {State: routeleases.Recovering, Route: plan.Route{URL: "https://recovering.test"}},
+	}
+	routes := activeInspectionRoutes(snapshot)
+	if len(routes) != 2 || routes[0].Service != "a" || routes[1].Service != "z" {
+		t.Fatalf("active routes = %+v", routes)
+	}
+}
 
 func TestRunSingleConfiguredExitServiceWithLogs(t *testing.T) {
 	dir := t.TempDir()

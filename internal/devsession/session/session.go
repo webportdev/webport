@@ -224,6 +224,17 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	}
 	var liveMu sync.Mutex
 	startupPrinted := false
+	var routeManager *routeleases.Manager
+	if resolvedPlan.Routes.Daemon.Available && len(resolvedPlan.Routes.Routes) > 0 {
+		ttl := time.Duration(resolvedPlan.Routes.Daemon.DefaultTTL) * time.Second
+		if ttl <= 0 {
+			ttl = 5 * time.Minute
+		}
+		routeManager, err = routeleases.NewManager(client, ttl, ttl/3)
+		if err != nil {
+			return err
+		}
+	}
 	controlPath := strings.TrimSuffix(stateStore.LivePath, ".live.json") + ".sock"
 	control, err := state.StartControl(controlPath, func(_ context.Context, request state.Request) state.Response {
 		showSensitive, _ := request.Payload["show_sensitive"].(bool)
@@ -289,6 +300,32 @@ func Run(ctx context.Context, options Options) (runErr error) {
 				values = values.ManagedOnly()
 			}
 			return state.Response{OK: true, Payload: map[string]any{"values": values.Map(showSensitive)}}
+		case "inspect":
+			planMu.RLock()
+			currentRuntime := runtimeFor(resolvedPlan)
+			order := append([]string(nil), resolvedPlan.Order...)
+			planMu.RUnlock()
+			serviceValues := make(map[string]map[string]string, len(order))
+			environmentMu.RLock()
+			for _, name := range order {
+				values := environments[name]
+				if resolved, resolveErr := values.ExpandRuntimeValues(currentRuntime); resolveErr == nil {
+					values = resolved
+				}
+				if !includeInherited {
+					values = values.ManagedOnly()
+				}
+				serviceValues[name] = values.Map(showSensitive)
+			}
+			environmentMu.RUnlock()
+			routes := make([]InspectionRoute, 0)
+			if routeManager != nil {
+				routes = activeInspectionRoutes(routeManager.Snapshot())
+			}
+			return state.Response{OK: true, Payload: map[string]any{"inspection": LiveInspection{
+				Project: id.Project, Branch: id.Branch, Worktree: id.WorktreeRoot,
+				Profile: resolvedPlan.Profile, Routes: routes, Environment: serviceValues,
+			}}}
 		case "exec-info":
 			name, _ := request.Payload["service"].(string)
 			service, ok := resolvedPlan.Services[name]
@@ -390,17 +427,6 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	}
 	if err := stateStore.PruneSessionLogs(id.SessionID); err != nil {
 		return err
-	}
-	var routeManager *routeleases.Manager
-	if resolvedPlan.Routes.Daemon.Available && len(resolvedPlan.Routes.Routes) > 0 {
-		ttl := time.Duration(resolvedPlan.Routes.Daemon.DefaultTTL) * time.Second
-		if ttl <= 0 {
-			ttl = 5 * time.Minute
-		}
-		routeManager, err = routeleases.NewManager(client, ttl, ttl/3)
-		if err != nil {
-			return err
-		}
 	}
 	refreshRoutes := func() {
 		if routeManager == nil {
@@ -549,6 +575,19 @@ func Run(ctx context.Context, options Options) (runErr error) {
 		fmt.Fprint(options.Out, summary)
 	}
 	return errors.Join(err, stateErr)
+}
+
+func activeInspectionRoutes(snapshot map[string]routeleases.Entry) []InspectionRoute {
+	routes := make([]InspectionRoute, 0, len(snapshot))
+	for name, entry := range snapshot {
+		if entry.State == routeleases.Active {
+			routes = append(routes, InspectionRoute{
+				Service: name, Project: entry.Route.Project, Branch: entry.Route.Branch, URL: entry.Route.URL,
+			})
+		}
+	}
+	sort.Slice(routes, func(i, j int) bool { return routes[i].Service < routes[j].Service })
+	return routes
 }
 
 type synchronizedWriter struct {

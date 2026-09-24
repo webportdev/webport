@@ -252,6 +252,13 @@ The wrapper keeps its existing route flags and lifecycle.
 The session commands are distinct from daemon-level `webport status` and
 `webport config`:
 
+`webport inspect` combines active HTTPS URLs and the live managed environment
+for the current project. `webport inspect --config /path/to/.webport.yaml`
+selects another active configured worktree. It groups environment values by
+service, redacts sensitive values by default, and supports `--format json`,
+`--show-sensitive`, and `--include-inherited`. An inactive worktree reports no
+active session; use `webport dev config --config PATH` to preview its plan.
+
 * `check` validates the selected dependency closure, environment references,
   generator policies, readiness configuration, and executables without
   starting commands or creating generated values;
