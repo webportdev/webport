@@ -61,8 +61,11 @@ webport upgrade
 ```
 
 The upgrade reuses the saved domain, TLS mode, DNS provider, zone, and
-credentials. It does not change local-CA trust unless `--trust-local-ca` is
-explicitly supplied.
+credentials and replaces the installed `webport` CLI, `webportctl`, and
+`webport-dns` binaries. Foreground development sessions that were already
+running keep their original process until restarted; `webport inspect` can
+still read their older session state. The upgrade does not change local-CA
+trust unless `--trust-local-ca` is explicitly supplied.
 
 Install the Webport development skill for Codex, OpenCode, Pi, and Claude Code
 without installing or changing the Webport daemon stack:

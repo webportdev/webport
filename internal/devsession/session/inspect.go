@@ -70,6 +70,9 @@ func InspectLive(ctx context.Context, options Options) (LiveInspection, error) {
 		return LiveInspection{}, fmt.Errorf("inspect live session: %w", err)
 	}
 	if !response.OK {
+		if response.Status == 404 && response.Error == "unknown control operation" {
+			return inspectLegacyLive(ctx, live, id, options)
+		}
 		return LiveInspection{}, fmt.Errorf("inspect live session: %s", response.Error)
 	}
 	encoded, err := json.Marshal(response.Payload["inspection"])
@@ -81,6 +84,56 @@ func InspectLive(ctx context.Context, options Options) (LiveInspection, error) {
 		return LiveInspection{}, err
 	}
 	return result, nil
+}
+
+// inspectLegacyLive reads the inspection data supported by session owners
+// started before the dedicated inspect control operation was added.
+func inspectLegacyLive(ctx context.Context, live state.LiveState, id identity.Identity, options Options) (LiveInspection, error) {
+	response, err := state.Dial(ctx, live.ControlPath, live.ControlToken, state.Request{
+		Operation: "config", Payload: map[string]any{
+			"structured": true, "show_sensitive": options.ShowSensitive,
+			"include_inherited": options.IncludeInherited,
+		},
+	})
+	if err != nil {
+		return LiveInspection{}, fmt.Errorf("inspect live config: %w", err)
+	}
+	if !response.OK {
+		return LiveInspection{}, fmt.Errorf("inspect live config: %s", response.Error)
+	}
+	encoded, err := json.Marshal(response.Payload["plan"])
+	if err != nil {
+		return LiveInspection{}, err
+	}
+	var selected plan.Plan
+	if err := json.Unmarshal(encoded, &selected); err != nil {
+		return LiveInspection{}, fmt.Errorf("decode live config: %w", err)
+	}
+	environments := make(map[string]map[string]string, len(selected.Services))
+	for serviceName, service := range selected.Services {
+		values := make(map[string]string, len(service.Env))
+		for name, item := range service.Env {
+			if item.Sensitive && !options.ShowSensitive {
+				values[name] = "<redacted>"
+			} else if item.Literal != nil {
+				values[name] = *item.Literal
+			}
+		}
+		environments[serviceName] = values
+	}
+	routes := make([]InspectionRoute, 0, len(live.Routes))
+	for serviceName, item := range live.Routes {
+		if item.State == "active" && item.URL != "" {
+			routes = append(routes, InspectionRoute{
+				Service: serviceName, Project: item.Project, Branch: item.Branch, URL: item.URL,
+			})
+		}
+	}
+	sort.Slice(routes, func(i, j int) bool { return routes[i].Service < routes[j].Service })
+	return LiveInspection{
+		Project: id.Project, Branch: id.Branch, Worktree: id.WorktreeRoot,
+		Profile: selected.Profile, Routes: routes, Environment: environments,
+	}, nil
 }
 
 func InspectConfig(ctx context.Context, options Options) (plan.Plan, error) {

@@ -114,9 +114,21 @@ write_file() {
 }
 
 install_file() {
-	local source=$1 destination=$2 mode=$3
+	local source=$1 destination=$2 mode=$3 temporary
 	privileged mkdir -p "$(dirname "$destination")"
-	privileged install -m "$mode" "$source" "$destination"
+	if (( DRY_RUN )); then
+		privileged install -m "$mode" "$source" "$destination"
+		return
+	fi
+	temporary=$(privileged mktemp "$(dirname "$destination")/.webport-install.XXXXXXXX")
+	if ! privileged install -m "$mode" "$source" "$temporary"; then
+		privileged rm -f "$temporary"
+		return 1
+	fi
+	if ! privileged mv -f "$temporary" "$destination"; then
+		privileged rm -f "$temporary"
+		return 1
+	fi
 }
 
 install_ai_skill() {

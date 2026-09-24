@@ -85,9 +85,18 @@ WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
 	--mode full --provider cloudflare --base-domain dev.example.com \
 	--credentials-file "$credentials" --webport-source local --traefik-source local \
 	--artifact-dir "$artifacts" --non-interactive --yes
+cp "$(command -v bash)" "$root/usr/local/bin/webport"
+"$root/usr/local/bin/webport" -c 'while :; do sleep 1; done' &
+old_cli_pid=$!
+sleep 0.1
+kill -0 "$old_cli_pid" || fail "old webport CLI did not stay running"
 WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
 	--upgrade --webport-source local --traefik-source local --artifact-dir "$artifacts" \
 	--non-interactive --yes
+kill "$old_cli_pid"
+wait "$old_cli_pid" 2>/dev/null || true
+cmp -s "$artifacts/webport" "$root/usr/local/bin/webport" ||
+	fail "upgrade did not replace the webport CLI"
 assert_contains "$root/usr/local/etc/webport/webport.env" "WEBPORT_BASE_DOMAIN=dev.example.com"
 assert_contains "$root/usr/local/etc/webport/webport.env" "WEBPORT_TLS_MODE=acme"
 assert_contains "$root/usr/local/etc/webport/webport.env" "WEBPORT_DNS_PROVIDER=cloudflare"

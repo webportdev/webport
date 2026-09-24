@@ -35,6 +35,9 @@ Use Webport for local development servers and foreground development sessions.
   environment output. Use `webport dev config` to preview an inactive session.
 - Use `webport status`, `webport config`, and `webport doctor` for daemon and
   route problems.
+- `webport upgrade` replaces the installed `webport`, `webportctl`, and
+  `webport-dns` binaries. Running `webport dev` sessions keep their existing
+  process until restarted; `webport inspect` can read older sessions.
 - Use `webport dev stop` to request a graceful stop from another terminal.
 - If a route is missing, first check that the client or session is still
   running and renewing its lease; manual routes expire unless refreshed.
