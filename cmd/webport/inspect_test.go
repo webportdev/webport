@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/webportdev/webport/internal/devsession/config"
+	"github.com/webportdev/webport/internal/devsession/plan"
 	devsession "github.com/webportdev/webport/internal/devsession/session"
 	"github.com/webportdev/webport/internal/devsession/state"
 	"github.com/webportdev/webport/internal/route"
@@ -98,9 +100,21 @@ func TestInspectConfigPathSelectsAnotherActiveWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Release()
+	var legacy atomic.Bool
 	control, err := state.StartControl(strings.TrimSuffix(store.LivePath, ".live.json")+".sock", func(_ context.Context, request state.Request) state.Response {
+		if request.Operation == "config" {
+			secret := "actual-secret"
+			return state.Response{OK: true, Payload: map[string]any{"plan": plan.Plan{
+				Profile: "default", Services: map[string]plan.Service{
+					"api": {Env: map[string]config.Value{"SECRET": {Literal: &secret, Sensitive: true}}},
+				},
+			}}}
+		}
 		if request.Operation != "inspect" {
 			return state.Response{Error: "unexpected operation"}
+		}
+		if legacy.Load() {
+			return state.Response{Status: 404, Error: "unknown control operation"}
 		}
 		secret := "<redacted>"
 		if request.Payload["show_sensitive"] == true {
@@ -120,7 +134,12 @@ func TestInspectConfigPathSelectsAnotherActiveWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer control.Close()
-	if err := store.WriteLive(state.LiveState{ControlPath: control.Path(), ControlToken: control.Token()}); err != nil {
+	if err := store.WriteLive(state.LiveState{
+		ControlPath: control.Path(), ControlToken: control.Token(),
+		Routes: map[string]state.RouteState{
+			"api": {State: "active", Project: "remote", Branch: "main", URL: "https://remote-main.test"},
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
@@ -131,15 +150,33 @@ func TestInspectConfigPathSelectsAnotherActiveWorktree(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &value); err != nil {
 		t.Fatal(err)
 	}
-	if value.Project != "remote" || value.Source != "configured" || value.Environment["api"]["SECRET"] != "<redacted>" || len(value.Routes) != 1 {
+	if value.Project != "remote" || value.Source != "configured" || value.Environment["api"]["SECRET"] != "actual-secret" || len(value.Routes) != 1 {
 		t.Fatalf("inspection = %+v", value)
+	}
+	output.Reset()
+	if err := runCLI([]string{"inspect", "--config", configPath}, nil, &output, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "SECRET=\"actual-secret\"") || strings.Contains(output.String(), "<redacted>") {
+		t.Fatalf("default inspection output = %s", output.String())
 	}
 	output.Reset()
 	if err := runCLI([]string{"inspect", "--config", configPath, "--show-sensitive", "--include-inherited"}, nil, &output, &output); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "actual-secret") || !strings.Contains(output.String(), "INHERITED") {
-		t.Fatalf("explicit inspection output = %s", output.String())
+		t.Fatalf("compatibility flag inspection output = %s", output.String())
+	}
+	legacy.Store(true)
+	output.Reset()
+	if err := runCLI([]string{"inspect", "--config", configPath, "--format", "json"}, nil, &output, &output); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(output.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Environment["api"]["SECRET"] != "actual-secret" || len(value.Routes) != 1 {
+		t.Fatalf("older session inspection = %+v", value)
 	}
 }
 

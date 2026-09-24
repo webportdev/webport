@@ -23,7 +23,6 @@ type inspectOptions struct {
 	configPath       string
 	api              string
 	format           string
-	showSensitive    bool
 	includeInherited bool
 	currentDir       string
 }
@@ -47,7 +46,7 @@ func runInspect(args []string, out, errOut io.Writer) error {
 	flags.StringVar(&options.configPath, "config", "", "configuration path for another active project")
 	flags.StringVar(&options.api, "api", defaultAPI, "webport API URL for route lookup")
 	flags.StringVar(&options.format, "format", "", "output format: json")
-	flags.BoolVar(&options.showSensitive, "show-sensitive", false, "show sensitive configured values")
+	flags.Bool("show-sensitive", false, "accepted for compatibility; configured values are always shown")
 	flags.BoolVar(&options.includeInherited, "include-inherited", false, "include inherited process environment for configured sessions")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -78,7 +77,7 @@ func runInspect(args []string, out, errOut io.Writer) error {
 func inspectProject(ctx context.Context, options inspectOptions) (projectInspection, error) {
 	live, err := devsession.InspectLive(ctx, devsession.Options{
 		CurrentDir: options.currentDir, ConfigPath: options.configPath,
-		ShowSensitive: options.showSensitive, IncludeInherited: options.includeInherited,
+		ShowSensitive: true, IncludeInherited: options.includeInherited,
 	})
 	if err == nil {
 		return projectInspection{

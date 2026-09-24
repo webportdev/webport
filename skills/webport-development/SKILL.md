@@ -22,10 +22,9 @@ Use Webport for local development servers and foreground development sessions.
 - Run `webport inspect` from the current project to see active HTTPS URLs and
   environment values. For another active configured worktree, use
   `webport inspect --config /path/to/.webport.yaml`.
-- A configured session's inspection groups environment values by service and
-  redacts sensitive values by default. Use `--format json` for structured
-  output, `--show-sensitive` only when values are needed, and
-  `--include-inherited` when the process environment matters.
+- A configured session's inspection groups resolved environment values by
+  service, including sensitive values. Use `--format json` for structured
+  output and `--include-inherited` when the process environment matters.
 - For a wrapper route without `.webport.yaml`, inspection shows the active URL
   and route context derived from it. It cannot read the child's full
   environment. Use `webport list` to find all active routes, including routes

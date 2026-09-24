@@ -118,7 +118,7 @@ webport inspect --config ../other-project/.webport.yaml
 ```
 
 For a configured session, `inspect` groups live environment values by service
-and redacts sensitive values. Use `--show-sensitive` to reveal them or
+and shows their resolved values, including sensitive values. Use
 `--include-inherited` to include inherited process variables. The `--config`
 path selects a specific active worktree, even when called from another
 project. A project started with `webport dev -- COMMAND` has no configured
