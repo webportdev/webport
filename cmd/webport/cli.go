@@ -870,18 +870,31 @@ func runInstaller(args []string) error {
 }
 
 func runInstallerTo(args []string, in io.Reader, out, errOut io.Writer) error {
-	return runInstallerCommand(installerCandidates(false), args, in, out, errOut)
+	return runInstallerCommand(installerCandidatesFor(installerNameForArgs(args), false), args, in, out, errOut)
 }
 
 func runUpgradeTo(args []string, in io.Reader, out, errOut io.Writer) error {
 	commandArgs := append([]string{"--upgrade"}, args...)
-	return runInstallerCommand(installerCandidates(true), commandArgs, in, out, errOut)
+	return runInstallerCommand(upgradeInstallerCandidates(), commandArgs, in, out, errOut)
 }
 
-func installerCandidates(preferInstalled bool) []string {
-	installed := filepath.Join("/usr/local/libexec/webport/installer/scripts", platformInstaller())
-	checkout := filepath.Join("scripts", platformInstaller())
-	binaryDir := filepath.Join(filepath.Dir(os.Args[0]), "scripts", platformInstaller())
+func installerNameForArgs(args []string) string {
+	for _, arg := range args {
+		if arg == "--ai-skill" {
+			return "bootstrap-install.sh"
+		}
+	}
+	return platformInstaller()
+}
+
+func upgradeInstallerCandidates() []string {
+	return installerCandidatesFor("bootstrap-install.sh", true)
+}
+
+func installerCandidatesFor(script string, preferInstalled bool) []string {
+	installed := filepath.Join("/usr/local/libexec/webport/installer/scripts", script)
+	checkout := filepath.Join("scripts", script)
+	binaryDir := filepath.Join(filepath.Dir(os.Args[0]), "scripts", script)
 	if preferInstalled {
 		return []string{installed, checkout, binaryDir}
 	}

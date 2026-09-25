@@ -165,6 +165,11 @@ expect_failure env WEBPORT_INSTALL_ROOT="$tmp/missing-upgrade" "$INSTALLER" \
 
 root="$tmp/upgrade-local"
 installed_installer="$root/usr/local/libexec/webport/installer/scripts/install.sh"
+WEBPORT_INSTALL_ROOT="$root" "$installed_installer" \
+	--upgrade --webport-source local --traefik-source local --artifact-dir "$artifacts" \
+	--non-interactive --yes
+assert_contains "$installed_installer" "--ai-skill"
+
 webport_release_dir="$tmp/webport-release"
 mkdir -p "$webport_release_dir"
 tar -C "$artifacts" -czf "$webport_release_dir/webport_vtest_linux_amd64.tar.gz" \

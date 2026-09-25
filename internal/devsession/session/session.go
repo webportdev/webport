@@ -98,6 +98,7 @@ func Run(ctx context.Context, options Options) (runErr error) {
 	if err != nil {
 		return err
 	}
+	// Acquire planMu before environmentMu whenever both protect a read or write.
 	var planMu, portMu, environmentMu sync.RWMutex
 	beforeStart := func(startCtx context.Context, serviceName string) (supervisor.StartPlan, error) {
 		planMu.Lock()
@@ -287,10 +288,10 @@ func Run(ctx context.Context, options Options) (runErr error) {
 			_ = json.Unmarshal(encoded, &payload)
 			return state.Response{OK: true, Payload: payload}
 		case "env":
+			planMu.RLock()
 			environmentMu.RLock()
 			values := sessionEnvironment(resolvedPlan, environments)
 			environmentMu.RUnlock()
-			planMu.RLock()
 			currentRuntime := runtimeFor(resolvedPlan)
 			planMu.RUnlock()
 			if resolved, resolveErr := values.ExpandRuntimeValues(currentRuntime); resolveErr == nil {
@@ -494,10 +495,10 @@ func Run(ctx context.Context, options Options) (runErr error) {
 				live.Endpoints[event.Service+"."+label] = endpoint
 			}
 			if len(exportPaths) > 0 && len(event.Ports) > 0 {
+				planMu.RLock()
 				environmentMu.RLock()
 				exported := sessionEnvironment(resolvedPlan, environments)
 				environmentMu.RUnlock()
-				planMu.RLock()
 				currentRuntime := runtimeFor(resolvedPlan)
 				planMu.RUnlock()
 				if resolved, resolveErr := exported.ExpandRuntimeValues(currentRuntime); resolveErr == nil {
