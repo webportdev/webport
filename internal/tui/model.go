@@ -404,22 +404,52 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			selected := rows[m.cursor]
-			value := selected.value
-			if key == "Y" && m.page == envPage {
-				value = selected.id + "=" + value
+			if m.page == envPage {
+				live, ok := m.instance()
+				if !ok {
+					m.message = "Instance is no longer active"
+					break
+				}
+				service := m.service
+				if service == "" {
+					names := m.services()
+					if len(names) > 0 {
+						service = names[0]
+					}
+				}
+				return m, m.copyEnvironment(live, service, selected.id, key == "Y")
 			}
+			value := selected.value
 			if value == "" {
 				m.message = "Select a URL or environment value to copy"
-				break
-			}
-			if selected.value == "<redacted>" {
-				m.message = "Value is hidden. Press v to reveal before copying."
 				break
 			}
 			return m, func() tea.Msg { message, err := m.copy(value); return resultMsg{message, err} }
 		}
 	}
 	return m, nil
+}
+
+// Fetch cleartext only for this clipboard operation. It never enters the model
+// or an inspection message, so copying does not change display visibility.
+func (m Model) copyEnvironment(live state.LiveState, service, name string, entry bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		inspection, err := m.backend.Inspect(ctx, live, true, m.inherited)
+		if err != nil {
+			return resultMsg{err: err}
+		}
+		value, ok := inspection.Environment[service][name]
+		if !ok {
+			return resultMsg{err: fmt.Errorf("environment entry %q is no longer available", name)}
+		}
+		if entry {
+			value = name + "=" + value
+		}
+		message, err := m.copy(value)
+		return resultMsg{message: message, err: err}
+	}
 }
 
 func (m Model) services() []string {
@@ -559,6 +589,7 @@ Actions apply to the entire selected instance, including its services.
 
 Copy
 c or y  Copy selected URL / env value   Y  Copy NAME=value
+Copy works while values stay hidden.
 v Reveal/hide sensitive env   i Include/exclude inherited env
 Native clipboard tools are used when available; otherwise OSC 52 is
 sent to your terminal. Clipboard support depends on the terminal.

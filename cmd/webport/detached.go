@@ -7,7 +7,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
+
+	"github.com/webportdev/webport/internal/devsession/state"
 	"syscall"
 	"time"
 )
@@ -87,7 +90,13 @@ func startDetachedDev(args []string, timeout time.Duration, out io.Writer) error
 	select {
 	case ok := <-ready:
 		if ok {
-			_, err = fmt.Fprintf(out, "development session detached (PID %d); log: %s\n", child.Process.Pid, log.Name())
+			instances, stateErr := state.ListLive()
+			if err := writeDetachedSummary(out, child.Process.Pid, log.Name(), instances); err != nil {
+				return err
+			}
+			if stateErr != nil && len(detachedServiceURLs(instances, child.Process.Pid)) == 0 {
+				_, err = fmt.Fprintf(out, "service URLs unavailable: %v\n", stateErr)
+			}
 			return err
 		}
 	case <-done:
@@ -96,4 +105,44 @@ func startDetachedDev(args []string, timeout time.Duration, out io.Writer) error
 		return fmt.Errorf("detached startup timed out; log: %s", log.Name())
 	}
 	return fmt.Errorf("detached development session failed to start; log: %s", log.Name())
+}
+
+// Select by supervisor PID rather than checkout: multiple wrappers can run in
+// the same worktree, and detached configured sessions may use --config PATH.
+func detachedServiceURLs(instances []state.LiveState, pid int) map[string]string {
+	urls := make(map[string]string)
+	for _, live := range instances {
+		if len(live.PIDs) == 0 || live.PIDs[0].PID != pid {
+			continue
+		}
+		for service, route := range live.Routes {
+			if route.State == "active" && route.URL != "" {
+				urls[service] = route.URL
+			}
+		}
+		for endpoint, url := range live.Endpoints {
+			if url != "" {
+				urls[endpoint] = url
+			}
+		}
+	}
+	return urls
+}
+
+func writeDetachedSummary(out io.Writer, pid int, logPath string, instances []state.LiveState) error {
+	if _, err := fmt.Fprintf(out, "development session detached (PID %d); log: %s\n", pid, logPath); err != nil {
+		return err
+	}
+	urls := detachedServiceURLs(instances, pid)
+	names := make([]string, 0, len(urls))
+	for name := range urls {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if _, err := fmt.Fprintf(out, "%s: %s\n", name, urls[name]); err != nil {
+			return err
+		}
+	}
+	return nil
 }

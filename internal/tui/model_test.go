@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -11,11 +12,18 @@ import (
 	"github.com/webportdev/webport/internal/devsession/state"
 )
 
-type fakeBackend struct{ actions []string }
+type fakeBackend struct {
+	actions              []string
+	inspection           session.LiveInspection
+	inspectErr           error
+	inspectedID          string
+	sensitive, inherited bool
+}
 
 func (b *fakeBackend) Snapshot(context.Context) Snapshot { return Snapshot{} }
-func (b *fakeBackend) Inspect(context.Context, state.LiveState, bool, bool) (session.LiveInspection, error) {
-	return session.LiveInspection{}, nil
+func (b *fakeBackend) Inspect(_ context.Context, live state.LiveState, sensitive, inherited bool) (session.LiveInspection, error) {
+	b.inspectedID, b.sensitive, b.inherited = live.SessionID, sensitive, inherited
+	return b.inspection, b.inspectErr
 }
 func (b *fakeBackend) Control(_ context.Context, live state.LiveState, operation string) error {
 	b.actions = append(b.actions, live.SessionID+":"+operation)
@@ -69,19 +77,32 @@ func TestActionConfirmationKeepsOriginalTargetAcrossRefresh(t *testing.T) {
 		t.Fatal("cancel did not dismiss confirmation")
 	}
 }
-func TestCopyUsesUntruncatedValueAndRequiresReveal(t *testing.T) {
-	m, _ := fixtureModel()
+func TestCopyUsesUntruncatedValueWhileKeepingItHidden(t *testing.T) {
+	m, backend := fixtureModel()
 	m.instanceID = "a"
 	m.service = "server"
 	m.page = envPage
 	copied := ""
 	m.copy = func(value string) (string, error) { copied = value; return "copied", nil }
 	m.inspection.Environment = map[string]map[string]string{"server": {"SECRET": "<redacted>"}}
+	backend.inspection.Environment = map[string]map[string]string{"server": {"SECRET": "multi\nline=value"}}
+	m.inherited = true
 	m, cmd := key(m, "c")
-	if cmd != nil || copied != "" {
-		t.Fatal("copied a hidden value")
+	if cmd == nil {
+		t.Fatal("hidden value cannot be copied")
 	}
-	m.inspection.Environment["server"]["SECRET"] = "multi\nline=value"
+	result := cmd()
+	updated, _ := m.Update(result)
+	m = updated.(Model)
+	if copied != "multi\nline=value" {
+		t.Fatalf("clipboard = %q", copied)
+	}
+	if m.sensitive || m.inspection.Environment["server"]["SECRET"] != "<redacted>" || strings.Contains(m.View(), "multi") {
+		t.Fatal("copy revealed the value")
+	}
+	if !backend.sensitive || !backend.inherited || backend.inspectedID != "a" {
+		t.Fatal("copy inspection used wrong scope")
+	}
 	_, cmd = key(m, "Y")
 	cmd()
 	if copied != "SECRET=multi\nline=value" {
@@ -147,5 +168,35 @@ func TestTerminalOutputIsSanitizedAndFitsViewport(t *testing.T) {
 	}
 	if !strings.Contains(view, "? Help") {
 		t.Fatal("help shortcut hidden")
+	}
+}
+
+func TestCopyHiddenEnvironmentHandlesMissingEmptyAndLiteralPlaceholder(t *testing.T) {
+	m, backend := fixtureModel()
+	m.instanceID, m.service, m.page = "a", "server", envPage
+	m.inspection.Environment = map[string]map[string]string{"server": {"VALUE": "<redacted>"}}
+	copied := false
+	var value string
+	m.copy = func(v string) (string, error) { copied = true; value = v; return "Copied", nil }
+	for _, actual := range []string{"", "<redacted>"} {
+		backend.inspection.Environment = map[string]map[string]string{"server": {"VALUE": actual}}
+		_, cmd := key(m, "c")
+		result := cmd().(resultMsg)
+		if result.err != nil || !copied || value != actual {
+			t.Fatalf("copy %q: copied=%v error=%v", actual, copied, result.err)
+		}
+	}
+	copied = false
+	backend.inspection.Environment = nil
+	_, cmd := key(m, "c")
+	result := cmd().(resultMsg)
+	if result.err == nil || copied {
+		t.Fatal("missing entry was copied")
+	}
+	backend.inspectErr = errors.New("instance stopped")
+	_, cmd = key(m, "Y")
+	result = cmd().(resultMsg)
+	if result.err == nil || copied {
+		t.Fatal("inspection failure wrote the clipboard")
 	}
 }

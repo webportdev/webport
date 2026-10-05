@@ -53,6 +53,7 @@ Usage:
   webport install [options]
   webport install --ai-skill [--yes]
   webport upgrade [options]
+  webport -d [options] [SERVICE]
   webport dev [options] [SERVICE]
   webport dev check|config|status|env|logs|stop|restart [options]
   webport dev exec SERVICE -- COMMAND [ARG...]

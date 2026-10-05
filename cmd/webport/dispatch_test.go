@@ -98,3 +98,13 @@ func TestParseDevOperationArgsAcceptsOptionsAfterOperation(t *testing.T) {
 		t.Fatalf("parsed operation arguments = %q, %q, %q, %q, %q, %q, %t, %t, %t, %t", positional, configPath, profile, api, format, shell, showSensitive, includeInherited, follow, cleanSecrets)
 	}
 }
+
+func TestDetachedShorthandDispatchesToDev(t *testing.T) {
+	for _, flag := range []string{"-d", "--detach"} {
+		var output bytes.Buffer
+		err := runCLI([]string{flag, "--format", "json"}, strings.NewReader(""), &output, &output)
+		if err == nil || !strings.Contains(err.Error(), "detached mode cannot be used with --format") {
+			t.Fatalf("%s: %v", flag, err)
+		}
+	}
+}

@@ -114,7 +114,8 @@ the Daemon tab shows publication status and checks the local HTTPS listener.
 
 Stop and restart apply to the entire instance, including its child services,
 and release its routes during cleanup. Sensitive and inherited values start
-hidden; reveal is explicit, and hidden values cannot be copied. Copy uses
+hidden; copy fetches the real value without revealing it on screen. `v` controls
+display visibility independently. Copy uses
 `pbcopy`, `wl-copy`, `xclip`, or `xsel` when available, with an OSC 52 terminal
 clipboard request as the fallback (terminal support is required).
 
@@ -203,7 +204,8 @@ webport dev clean --secrets              # explicitly remove project secrets
 
 Sessions run in the foreground by default. Use `-d` (or `--detach`) to
 run in the background; startup waits for readiness and prints the supervisor
-PID and log path. Configured sessions still support status, logs, stop, and
+PID, log path, published service URLs, and configured endpoint URLs.
+`webport -d` is a shorthand for `webport dev -d`. Configured sessions still support status, logs, stop, and
 restart from another terminal. Restart preserves the active profile and service
 selection and reloads configuration after graceful cleanup. `--` always
 selects the original wrapper path, so `webport dev -- npm run dev` remains

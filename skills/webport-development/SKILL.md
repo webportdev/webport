@@ -19,8 +19,9 @@ Use Webport for local development servers and configured development sessions.
   `--detach`) for a configured background session, or
   `webport dev -d -- COMMAND` for a detached command wrapper. Put `-d` before
   `--` so it is consumed by Webport rather than the application.
-- Detached startup waits for readiness and prints the supervisor PID and log
-  path. Check that log if startup fails; use `--startup-timeout DURATION` to
+- `webport -d` is a shorthand for `webport dev -d`. Detached startup waits for
+  readiness and prints the supervisor PID, log path, published service URLs,
+  and configured endpoint URLs. Check that log if startup fails; use `--startup-timeout DURATION` to
   adjust the wait. Detached mode cannot be combined with inspection commands
   or `--format`.
 - Treat the printed `WEBPORT_URL` or route URL as the public development URL.
@@ -36,7 +37,8 @@ Use Webport for local development servers and configured development sessions.
   a long URL or environment entry.
 - Use `c` or `y` to copy a URL/env value and `Y` for `NAME=value`. Sensitive and
   inherited environment values start hidden; `v` reveals and `i` includes
-  inherited values. Hidden values cannot be copied. Clipboard fallback uses
+  inherited values. Copy fetches the real value even while masked, without
+  revealing it on screen; `v` only changes display visibility. Clipboard fallback uses
   OSC 52, which requires terminal support.
 - `r` restarts and `x` gracefully kills the selected instance after confirmation
   (`y`/Enter accepts; Esc cancels). These actions affect the entire instance.
