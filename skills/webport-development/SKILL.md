@@ -25,6 +25,24 @@ Use Webport for local development servers and configured development sessions.
   or `--format`.
 - Treat the printed `WEBPORT_URL` or route URL as the public development URL.
 
+## Interactive dashboard
+
+- Use `webport tui` in a terminal to browse current-user configured sessions and
+  command wrappers, services, URLs, and live environment values. `--api URL`
+  selects the daemon for route/status lookup; process control remains local.
+- Hotkeys are visible in the footer; `?` opens scrollable help. Use Enter to
+  open an instance/service, Tab to switch tabs, `s`/`u`/`e` for service/URL/env
+  views, `[`/`]` to switch services, and `/` to filter rows. Enter also expands
+  a long URL or environment entry.
+- Use `c` or `y` to copy a URL/env value and `Y` for `NAME=value`. Sensitive and
+  inherited environment values start hidden; `v` reveals and `i` includes
+  inherited values. Hidden values cannot be copied. Clipboard fallback uses
+  OSC 52, which requires terminal support.
+- `r` restarts and `x` gracefully kills the selected instance after confirmation
+  (`y`/Enter accepts; Esc cancels). These actions affect the entire instance.
+  `q` exits only the dashboard. Routes without a session owner are read-only;
+  older wrappers need to be started again to expose TUI control.
+
 ## Inspect and troubleshoot
 
 - Run `webport inspect` from the current project to see active HTTPS URLs and
@@ -57,8 +75,8 @@ Use Webport for local development servers and configured development sessions.
   configured project.
 - Use `webport dev stop` to request a graceful configured session stop from
   another terminal. These control commands work for foreground and detached
-  configured sessions; command wrappers do not expose session control. For a
-  detached wrapper, send SIGTERM to the printed supervisor PID for cleanup.
+  configured sessions. Manage command wrappers through `webport tui`, or
+  send SIGTERM to the printed supervisor PID for detached-wrapper cleanup.
 - Restart reuses the running supervisor binary. After `webport upgrade`, stop
   and launch the session again to use the newly installed binary.
 - If a route is missing, first check that the client or session is still

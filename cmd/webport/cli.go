@@ -59,6 +59,7 @@ Usage:
   webport dev clean --secrets [options]
   webport dev [options] -- COMMAND [ARG...]
   webport route --port PORT [options]
+  webport tui [--api URL]
   webport inspect [--config PATH] [--format json] [options]
   webport list
   webport status
@@ -73,6 +74,8 @@ Run "webport dev -- npm run dev" from a Git checkout to publish a server.
 Run "webport dev" in a checkout with .webport.yaml to use a configured
 foreground session. Use "webport dev status" or "webport dev logs --follow"
 from another terminal while it runs.
+Run "webport tui" to browse instances, services, URLs, and environment,
+and manage active instances with visible hotkeys.
 Use "webport inspect" to see active URLs and environment for this project.
 Use "webport inspect --config PATH" for another active configured project.
 Use "webport dev config --include-inherited" or
@@ -150,7 +153,18 @@ func runDev(args []string) error {
 	return runDevWithIO(args, os.Stdin, os.Stdout, os.Stderr)
 }
 
+var errDevRestart = errors.New("restart development wrapper")
+
 func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
+	for {
+		err := runDevOnce(args, in, out, errOut)
+		if !errors.Is(err, errDevRestart) {
+			return err
+		}
+	}
+}
+
+func runDevOnce(args []string, in io.Reader, out, errOut io.Writer) error {
 	if len(args) > 0 && args[0] == "exec" {
 		return runDevExec(args[1:], in, out, errOut)
 	}
@@ -276,6 +290,14 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	if err != nil {
 		return err
 	}
+	store, err := wrapperStore()
+	if err != nil {
+		return err
+	}
+	if err := store.Acquire(); err != nil {
+		return err
+	}
+	defer func() { _ = store.Release(); _ = os.Remove(store.LockPath) }()
 	commandArgs := args[separator+1:]
 	command := exec.Command(commandArgs[0], commandArgs[1:]...)
 	command.Stdin, command.Stdout, command.Stderr = in, out, errOut
@@ -347,6 +369,12 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 		return err
 	}
 
+	var restart atomic.Bool
+	control, err := startWrapperControl(store, resolution, values, command, signals, &restart)
+	if err != nil {
+		return errors.Join(err, manager.Stop())
+	}
+	defer func() { _ = control.Close(); _ = store.RemoveLive() }()
 	notifyDetachedReady()
 	var commandErr error
 	select {
@@ -364,6 +392,9 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 			return fmt.Errorf("development command exited with status %d", exitErr.ExitCode())
 		}
 		return commandErr
+	}
+	if restart.Load() && releaseErr == nil {
+		return errDevRestart
 	}
 	return releaseErr
 }

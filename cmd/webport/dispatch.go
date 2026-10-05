@@ -24,6 +24,8 @@ func runCLI(args []string, in io.Reader, out, errOut io.Writer) error {
 		return err
 	case "help", "-h", "--help":
 		return writeHelp(out)
+	case "tui":
+		return runTUI(args[1:], in, out, errOut)
 	case "dev":
 		return runDevWithIO(args[1:], in, out, errOut)
 	case "route":

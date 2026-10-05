@@ -27,6 +27,10 @@ For example, `myapp` plus `feature/auth` becomes
   logs, exports, and authenticated session control.
 - Traefik watches the generated YAML through its file provider. webport
   atomically replaces the file; it does not invoke a reload command.
+- `webport tui` browses current-user instances through private runtime metadata
+  and authenticated control sockets, plus daemon routes and publication status.
+  Bubble Tea and Lip Gloss provide the terminal interface; wrappers publish
+  separate instance metadata so concurrent wrappers can share a worktree.
 - `webportctl` registers a manual route, sends heartbeats, and unregisters it
   on shutdown. It can infer project and branch from Git.
 - `webport-dns` inspects or synchronizes persistent wildcard A/AAAA records for
@@ -238,6 +242,9 @@ perform their own narrowly scoped elevation.
 - Avoid logging provider secrets or accepting them as CLI values.
 - Tests use small interfaces/fakes such as `traefik.Writer`; no live Traefik,
   DNS provider, systemd, or LaunchDaemon should be needed for unit tests.
-- The only non-standard runtime dependencies are go-systemd, libdns provider
-  packages, and `golang.org/x/sys`; proxying itself is handled by the external
-  official Traefik binary.
+- Runtime dependencies include go-systemd, libdns provider packages,
+  `golang.org/x/sys`, YAML, and the Charm terminal UI libraries. Proxying is
+  handled by the external official Traefik binary.
+- TUI output must treat project names, URLs, and environment as plain text,
+  preserve selections across refresh, and never render control credentials.
+  Stop/restart targets use captured session credentials, not raw PIDs.

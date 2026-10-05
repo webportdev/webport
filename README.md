@@ -81,6 +81,48 @@ webport install --ai-skill
 If a skill file already exists, the command asks before replacing it. Use
 `--yes` for unattended replacement.
 
+## Terminal dashboard
+
+Run `webport tui` in an interactive terminal to browse all active development
+instances for your user, including configured sessions and command wrappers.
+The dashboard refreshes every two seconds and preserves the selected row.
+Use `--api URL` to select the daemon API; instance control remains local to
+this user's runtime directory.
+
+The Instances tab shows project/branch, profile, readiness, and worktree.
+Press Enter to browse services, then use the URLs and Environment tabs for
+that service. The Routes tab lists all daemon routes, including manual routes;
+the Daemon tab shows publication status and checks the local HTTPS listener.
+
+| Key | Action |
+| --- | --- |
+| Arrow keys or `j`/`k` | Select a row |
+| Enter | Open instance/service, or expand a long value |
+| Tab / Shift+Tab | Next / previous tab |
+| `1` / `2` / `3` | Instances / Routes / Daemon |
+| `s` / `u` / `e` | Services / URLs / Environment inside an instance |
+| `[` / `]` | Previous / next service |
+| `/` | Filter the current list; Enter finishes, Esc clears |
+| `c` or `y` | Copy the selected URL or environment value |
+| `Y` | Copy the selected environment entry as `NAME=value` |
+| `v` / `i` | Reveal sensitive values / include inherited environment |
+| `r` / `x` | Restart / kill the selected instance (graceful stop) |
+| `y` or Enter / Esc | Confirm / cancel an instance action |
+| `?` | Scrollable hotkey help |
+| F5 | Refresh immediately |
+| `q` or Ctrl+C | Quit the dashboard; instances keep running |
+
+Stop and restart apply to the entire instance, including its child services,
+and release its routes during cleanup. Sensitive and inherited values start
+hidden; reveal is explicit, and hidden values cannot be copied. Copy uses
+`pbcopy`, `wl-copy`, `xclip`, or `xsel` when available, with an OSC 52 terminal
+clipboard request as the fallback (terminal support is required).
+
+Instances started before this feature may lack wrapper metadata or restart
+support. Start them again with the updated binary to enable management. Manual
+and legacy discovered routes are visible in Routes; they do not expose process
+control or service environments.
+
 ## Commands
 
 ```text
@@ -90,6 +132,7 @@ webport upgrade [options]                    Upgrade using the saved configurati
 webport dev [options] -- COMMAND [ARG...]    Run and publish a dev server
 webport route --port PORT [options]          Publish an already-running server
 webport inspect [--config PATH] [options]    Show active URLs and project environment
+webport tui [--api URL]                       Manage instances and browse URLs/environment
 webport list                                 List active routes
 webport status                               Show daemon/publication state
 webport doctor                               Test API, TLS, trust, and DNS
