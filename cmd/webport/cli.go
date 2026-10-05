@@ -54,7 +54,7 @@ Usage:
   webport install --ai-skill [--yes]
   webport upgrade [options]
   webport dev [options] [SERVICE]
-  webport dev check|config|status|env|logs|stop [options]
+  webport dev check|config|status|env|logs|stop|restart [options]
   webport dev exec SERVICE -- COMMAND [ARG...]
   webport dev clean --secrets [options]
   webport dev [options] -- COMMAND [ARG...]
@@ -172,7 +172,10 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	var shell string
 	var follow bool
 	var cleanSecrets bool
+	var detached bool
 	addRouteFlags(flags, &values)
+	flags.BoolVar(&detached, "d", false, "run development session detached")
+	flags.BoolVar(&detached, "detach", false, "run development session detached")
 	flags.DurationVar(&startupTimeout, "startup-timeout", 30*time.Second, "time to wait for an HTTP listener")
 	flags.StringVar(&format, "format", "", "resolution output format: json or env")
 	flags.StringVar(&configPath, "config", "", "development session configuration path")
@@ -188,6 +191,12 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 	}
 	if err := flags.Parse(flagArgs); err != nil {
 		return err
+	}
+	if detached {
+		if format != "" {
+			return errors.New("detached mode cannot be used with --format")
+		}
+		return startDetachedDev(args, startupTimeout, out)
 	}
 	if separator < 0 {
 		positional := flags.Args()
@@ -243,6 +252,7 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 			ConfigPath: configPath, Profile: profile, Service: service, API: values.api,
 			In: in, Out: out, ErrOut: errOut,
 			StopSignal: func() os.Signal { return syscall.Signal(received.Load()) },
+			OnReady:    notifyDetachedReady,
 		})
 	}
 	if format != "" && format != "json" && format != "env" {
@@ -337,6 +347,7 @@ func runDevWithIO(args []string, in io.Reader, out, errOut io.Writer) error {
 		return err
 	}
 
+	notifyDetachedReady()
 	var commandErr error
 	select {
 	case sig := <-signals:
@@ -432,7 +443,7 @@ func parseDevOperationArgs(args []string, configPath, profile, api, format, shel
 
 func isDevInspectionOperation(operation string) bool {
 	switch operation {
-	case "check", "config", "status", "env", "stop", "logs", "clean":
+	case "check", "config", "status", "env", "stop", "restart", "logs", "clean":
 		return true
 	default:
 		return false
@@ -502,20 +513,20 @@ func runDevInspection(operation string, operationArgs []string, configPath, prof
 		}
 		_, err = io.WriteString(out, rendered)
 		return err
-	case "stop":
+	case "stop", "restart":
 		if len(operationArgs) > 0 {
-			return errors.New("webport dev stop accepts no arguments")
+			return fmt.Errorf("webport dev %s accepts no arguments", operation)
 		}
 		stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		response, err := devsession.Control(stopContext, options, "stop", nil)
+		response, err := devsession.Control(stopContext, options, operation, nil)
 		if err != nil {
 			return err
 		}
 		if !response.OK {
 			return errors.New(response.Error)
 		}
-		_, err = fmt.Fprintln(out, "development session stop requested")
+		_, err = fmt.Fprintf(out, "development session %s requested\n", operation)
 		return err
 	case "logs":
 		service := ""

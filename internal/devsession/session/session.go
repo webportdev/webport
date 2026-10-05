@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/webportdev/webport/internal/devsession/command"
@@ -42,9 +43,20 @@ type Options struct {
 	PreferLive       bool
 	ShowSensitive    bool
 	IncludeInherited bool
+	OnReady          func()
 }
 
-func Run(ctx context.Context, options Options) (runErr error) {
+func Run(ctx context.Context, options Options) error {
+	for {
+		var restart atomic.Bool
+		err := runOnce(ctx, options, &restart)
+		if !restart.Load() || ctx.Err() != nil || err != nil {
+			return err
+		}
+	}
+}
+
+func runOnce(ctx context.Context, options Options, restart *atomic.Bool) (runErr error) {
 	if options.In == nil {
 		options.In = os.Stdin
 	}
@@ -241,6 +253,10 @@ func Run(ctx context.Context, options Options) (runErr error) {
 		showSensitive, _ := request.Payload["show_sensitive"].(bool)
 		includeInherited, _ := request.Payload["include_inherited"].(bool)
 		switch request.Operation {
+		case "restart":
+			restart.Store(true)
+			cancel()
+			return state.Response{OK: true}
 		case "stop":
 			cancel()
 			return state.Response{OK: true, Payload: map[string]any{"session_id": id.SessionID}}
@@ -556,6 +572,9 @@ func Run(ctx context.Context, options Options) (runErr error) {
 						planMu.RUnlock()
 						fmt.Fprint(options.Out, summary)
 						startupPrinted = true
+						if options.OnReady != nil {
+							options.OnReady()
+						}
 					}
 				}
 			}

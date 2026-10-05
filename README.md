@@ -148,11 +148,17 @@ webport dev env --shell fish             # render managed live environment
 webport dev env --include-inherited      # include inherited process variables
 webport dev logs backend --follow        # follow the service log
 webport dev exec backend -- go test ./... # run a one-off command in the service context
-webport dev stop                         # request graceful foreground shutdown
+webport dev -d                           # start a detached configured session
+webport dev restart                      # gracefully restart the active configured session
+webport dev stop                         # request graceful session shutdown
 webport dev clean --secrets              # explicitly remove project secrets
 ```
 
-Configured sessions are foreground-owned and do not detach. `--` always
+Sessions run in the foreground by default. Use `-d` (or `--detach`) to
+run in the background; startup waits for readiness and prints the supervisor
+PID and log path. Configured sessions still support status, logs, stop, and
+restart from another terminal. Restart preserves the active profile and service
+selection and reloads configuration after graceful cleanup. `--` always
 selects the original wrapper path, so `webport dev -- npm run dev` remains
 valid even when a configuration file is present. Status/config output is
 redacted by default; project-lifetime generated values live only in a
