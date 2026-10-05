@@ -22,8 +22,8 @@ For example, `myapp` plus `feature/auth` becomes
   in-memory route store, REST API, TTL checker, TLS setup, and Traefik dynamic
   configuration. Legacy daemon-side process discovery is an opt-in migration
   path.
-- `webport dev` owns the foreground wrapper or configured multi-service
-  session, including process supervision, readiness, named ports, route leases,
+- `webport dev` owns foreground or detached wrappers and configured
+  multi-service sessions, including process supervision, readiness, named ports, route leases,
   logs, exports, and authenticated session control.
 - Traefik watches the generated YAML through its file provider. webport
   atomically replaces the file; it does not invoke a reload command.
@@ -52,7 +52,7 @@ webport/
 │   ├── api/                     # REST handlers
 │   ├── config/                  # Daemon environment configuration
 │   ├── discovery/               # Linux/macOS legacy daemon discovery
-│   ├── devsession/              # Configured foreground session runtime
+│   ├── devsession/              # Configured session runtime
 │   ├── dnsmanager/              # Provider-independent wildcard DNS logic
 │   ├── localca/                 # Private CA and wildcard leaf lifecycle
 │   ├── route/                   # Route types, domains, store, and TTL checker
@@ -223,6 +223,12 @@ relevant installer test. Do not run installation tasks as root; the tasks
 perform their own narrowly scoped elevation.
 
 ## Contributor Notes
+
+- Whenever adding or updating features, review and update the affected skills
+  under `skills/` in the same change. Keep command examples, behavior,
+  limitations, and supporting resources consistent with the implementation;
+  `skills/webport-development/SKILL.md` is bundled in releases and installed
+  for supported agents. Validate changed skills before releasing.
 
 - Keep platform-specific discovery behind the existing build-tagged files.
 - Preserve deterministic Traefik output and atomic publication.
