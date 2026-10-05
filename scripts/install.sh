@@ -132,6 +132,7 @@ install_file() {
 }
 
 install_ai_skill() {
+	local existing_only=${1:-0}
 	local skill_name=webport-development source destination answer
 	local destinations
 	source="$REPO_DIR/skills/$skill_name/SKILL.md"
@@ -144,12 +145,15 @@ install_ai_skill() {
 		"$HOME/.claude/skills/$skill_name"
 	)
 	for destination in "${destinations[@]}"; do
+		if (( existing_only )) && [[ ! -e "$destination/SKILL.md" && ! -L "$destination/SKILL.md" ]]; then
+			continue
+		fi
 		if (( DRY_RUN )); then
 			log "dry-run: install agent skill at $destination/SKILL.md"
 			continue
 		fi
 		if [[ -e "$destination/SKILL.md" || -L "$destination/SKILL.md" ]]; then
-			if (( ! ASSUME_YES )); then
+			if (( ! existing_only && ! ASSUME_YES )); then
 				(( NON_INTERACTIVE )) && die "agent skill already exists at $destination/SKILL.md; rerun with --yes"
 				[[ -t 0 ]] || die "replacing an agent skill requires an interactive stdin or --yes"
 				read -r -p "Replace $destination/SKILL.md? [y/N] " answer
@@ -1042,6 +1046,10 @@ if [[ "$ROOT" == / && "$DRY_RUN" == 0 && "$TLS_MODE" == local-ca ]]; then
 	if (( ! TRUST_LOCAL_CA )); then
 		log "Skipped TLS trust diagnostics because the local CA was not trusted."
 	fi
+fi
+
+if (( UPGRADE )) && [[ "$MODE" != traefik ]]; then
+	install_ai_skill 1
 fi
 
 log "Installation complete."

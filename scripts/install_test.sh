@@ -5,6 +5,8 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 INSTALLER="$SCRIPT_DIR/install.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+export HOME="$tmp/home"
+mkdir -p "$HOME"
 shims="$tmp/shims"
 artifacts="$tmp/artifacts"
 mkdir -p "$shims" "$artifacts"
@@ -131,9 +133,33 @@ WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
 	--mode full --provider cloudflare --base-domain dev.example.com \
 	--credentials-file "$cloudflare" --webport-source local --traefik-source local \
 	--artifact-dir "$artifacts" --non-interactive --yes
-WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
+upgrade_skill_home="$tmp/upgrade-skill-home"
+upgrade_skill_paths=(
+	"$upgrade_skill_home/.codex/skills/webport-development/SKILL.md"
+	"$upgrade_skill_home/.config/opencode/skills/webport-development/SKILL.md"
+	"$upgrade_skill_home/.pi/agent/skills/webport-development/SKILL.md"
+)
+for skill_path in "${upgrade_skill_paths[@]}"; do
+	mkdir -p "$(dirname "$skill_path")"
+	printf 'old skill\n' >"$skill_path"
+done
+HOME="$upgrade_skill_home" WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
 	--upgrade --webport-source local --traefik-source local --artifact-dir "$artifacts" \
-	--non-interactive --yes
+	--non-interactive --dry-run >"$tmp/upgrade-skill-dry-run.log"
+for skill_path in "${upgrade_skill_paths[@]}"; do
+	assert_contains "$skill_path" "old skill"
+	assert_contains "$tmp/upgrade-skill-dry-run.log" "$skill_path"
+done
+HOME="$upgrade_skill_home" WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
+	--upgrade --webport-source local --traefik-source local --artifact-dir "$artifacts" \
+	--non-interactive
+for skill_path in "${upgrade_skill_paths[@]}"; do
+	cmp -s "$SCRIPT_DIR/../skills/webport-development/SKILL.md" "$skill_path" ||
+		fail "upgrade did not refresh $skill_path"
+done
+[[ ! -e "$upgrade_skill_home/.claude/skills/webport-development/SKILL.md" ]] ||
+	fail "upgrade installed a previously absent skill"
+
 assert_contains "$root/etc/webport/webport.env" "WEBPORT_BASE_DOMAIN=dev.example.com"
 assert_contains "$root/etc/webport/webport.env" "WEBPORT_TLS_MODE=acme"
 assert_contains "$root/etc/webport/webport.env" "WEBPORT_DNS_PROVIDER=cloudflare"

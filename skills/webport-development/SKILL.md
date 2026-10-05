@@ -43,7 +43,10 @@ Use Webport for local development servers and configured development sessions.
 - Use `webport status`, `webport config`, and `webport doctor` for daemon and
   route problems.
 - `webport upgrade` replaces the installed `webport`, `webportctl`, and
-  `webport-dns` binaries. Running `webport dev` sessions keep their existing
+  `webport-dns` binaries and refreshes already-installed Webport skills for the
+  invoking user without prompting, including locally edited skill files.
+  Absent skill installations are left untouched; `--dry-run` reports planned
+  updates without writing. Running `webport dev` sessions keep their existing
   supervisor process until stopped and launched again; `webport inspect` can
   read older sessions.
 - For an active configured session, use `webport dev restart` to gracefully
