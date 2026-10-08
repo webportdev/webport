@@ -200,3 +200,154 @@ func TestCopyHiddenEnvironmentHandlesMissingEmptyAndLiteralPlaceholder(t *testin
 		t.Fatal("inspection failure wrote the clipboard")
 	}
 }
+
+func TestDashboardLayoutsFitEveryPageAndOverlay(t *testing.T) {
+	for _, size := range [][2]int{{48, 14}, {60, 18}, {100, 24}, {140, 40}, {24, 8}} {
+		for p := instancesPage; p <= envPage; p++ {
+			for _, overlay := range []string{"", "help", "detail", "confirm"} {
+				m, _ := fixtureModel()
+				m.width, m.height, m.page = size[0], size[1], p
+				m.instanceID, m.service = "a", "server"
+				m.snapshot.Instances[0].ControlToken = "NEVER_RENDER_CONTROL_TOKEN"
+				m.snapshot.Instances[0].ControlPath = "/private/NEVER_RENDER_SOCKET"
+				m.snapshot.Instances[0].Worktree = "/projects/" + strings.Repeat("long界", 50) + "\x1b]52;c;bad\a"
+				m.inspection.Environment = map[string]map[string]string{"server": {"TOKEN": "<redacted>"}}
+				if overlay == "help" {
+					m.help = true
+				}
+				if overlay == "detail" {
+					m.detail = strings.Repeat("long界value ", 200)
+				}
+				if overlay == "confirm" {
+					m.confirm = &confirmation{"stop", m.snapshot.Instances[0]}
+				}
+				view := m.View()
+				if strings.Contains(view, "NEVER_RENDER") || strings.Contains(view, "52;c") {
+					t.Fatalf("unsafe output on page %d, size %v", p, size)
+				}
+				if len(strings.Split(view, "\n")) > m.height {
+					t.Fatalf("height overflow: size %v, page %d, overlay %s", size, p, overlay)
+				}
+				for _, line := range strings.Split(view, "\n") {
+					if ansi.StringWidth(line) > m.width-2 {
+						t.Fatalf("width overflow: size %v, page %d: %q", size, p, line)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPauseSkipsAutomaticFetchButAllowsManualRefresh(t *testing.T) {
+	m, _ := fixtureModel()
+	m, _ = key(m, "p")
+	updated, cmd := m.Update(tickMsg{})
+	m = updated.(Model)
+	if !m.paused || m.fetching || cmd == nil {
+		t.Fatal("pause must skip fetching and retain timer")
+	}
+	m, cmd = key(m, "f5")
+	if !m.paused || !m.fetching || cmd == nil {
+		t.Fatal("manual refresh must work while paused")
+	}
+	updated, _ = m.Update(snapshotMsg{m.snapshot, m.snapshotGeneration})
+	m = updated.(Model)
+	m, cmd = key(m, "p")
+	if m.paused || !m.fetching || cmd == nil {
+		t.Fatal("resume must fetch immediately")
+	}
+}
+
+func TestURLActionsUseSelectedInstanceAndService(t *testing.T) {
+	m, _ := fixtureModel()
+	copied, opened := "", ""
+	m.copy = func(value string) (string, error) { copied = value; return "copied", nil }
+	m.open = func(value string) error { opened = value; return nil }
+	_, cmd := key(m, "o")
+	if cmd == nil {
+		t.Fatal("no browser command")
+	}
+	cmd()
+	_, cmd = key(m, "c")
+	cmd()
+	if opened != "https://alpha.test" || copied != opened {
+		t.Fatalf("open=%q copy=%q", opened, copied)
+	}
+	m.instanceID, m.page = "a", servicesPage
+	m.snapshot.Instances[0].Services["worker"] = state.ServiceState{State: "ready"}
+	m.snapshot.Instances[0].Endpoints = map[string]string{"worker.http": "http://localhost:9000", "worker.admin": "http://localhost:9001"}
+	m.cursor = 1
+	_, cmd = key(m, "o")
+	cmd()
+	if opened != "http://localhost:9001" {
+		t.Fatalf("endpoint selection = %q", opened)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.page != urlsPage || m.service != "worker" {
+		t.Fatal("Tab lost selected service")
+	}
+	m.page = envPage
+	_, cmd = key(m, "o")
+	if cmd != nil {
+		t.Fatal("environment must not open a browser")
+	}
+	m.page, m.cursor = instancesPage, 1
+	_, cmd = key(m, "o")
+	if cmd != nil {
+		t.Fatal("instance without URL must not open browser")
+	}
+}
+
+func TestInspectionRefreshPreservesEnvironmentSelection(t *testing.T) {
+	m, _ := fixtureModel()
+	m.instanceID, m.service, m.page = "a", "server", envPage
+	m.inspection.Environment = map[string]map[string]string{"server": {"B": "one", "C": "two"}}
+	m.cursor = 1
+	updated, _ := m.Update(inspectionMsg{id: "a", generation: m.generation, value: session.LiveInspection{Environment: map[string]map[string]string{"server": {"A": "new", "B": "one", "C": "two"}}}})
+	m = updated.(Model)
+	if m.rows()[m.cursor].id != "C" {
+		t.Fatal("inspection refresh changed selection")
+	}
+}
+
+func TestMouseWheelNavigationRespectsConfirmation(t *testing.T) {
+	m, _ := fixtureModel()
+	wheel := tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress}
+	updated, _ := m.Update(wheel)
+	m = updated.(Model)
+	if m.cursor != 1 {
+		t.Fatal("wheel did not move selection")
+	}
+	m, _ = key(m, "x")
+	updated, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	m = updated.(Model)
+	if m.cursor != 1 || m.confirm.instance.SessionID != "b" {
+		t.Fatal("wheel changed pending action")
+	}
+}
+
+func TestBrowserRejectsNonHTTPAndCredentialURLs(t *testing.T) {
+	for _, value := range []string{"", "file:///tmp/private", "javascript:alert(1)", "https://user:secret@example.com", "--help", "https://", "https://example.com\nunsafe"} {
+		if err := OpenURL(value); err == nil {
+			t.Fatalf("accepted %q", value)
+		}
+	}
+}
+
+func TestFullDetailsAreScrollableAndExcludeControlCredentials(t *testing.T) {
+	m, _ := fixtureModel()
+	m.snapshot.Instances[0].ControlToken = "private-control-credential"
+	m.snapshot.Instances[0].ControlPath = "/private/control-socket"
+	m, _ = key(m, "d")
+	if !strings.Contains(m.detail, "WORKTREE\n/projects/alpha") || strings.Contains(m.detail, "private-control") || strings.Contains(m.detail, "control-socket") {
+		t.Fatalf("unexpected detail: %q", m.detail)
+	}
+	if !strings.Contains(m.View(), "PROJECT / BRANCH") {
+		t.Fatal("details not displayed")
+	}
+	m, _ = key(m, "esc")
+	if m.detail != "" {
+		t.Fatal("details did not close")
+	}
+}

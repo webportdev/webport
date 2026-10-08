@@ -35,6 +35,16 @@ Use Webport for local development servers and configured development sessions.
   open an instance/service, Tab to switch tabs, `s`/`u`/`e` for service/URL/env
   views, `[`/`]` to switch services, and `/` to filter rows. Enter also expands
   a long URL or environment entry.
+- Wide terminals show a selection detail pane with readiness, worktree,
+  backend, and service information. Compact terminals show a single list.
+  Use the mouse wheel to scroll lists/help, `p` to pause/resume automatic
+  refresh, and F5 to refresh immediately even while paused. `d` opens all
+  selection details in a scrollable view, including on compact terminals.
+- Use `o` to open an HTTP(S) URL in the browser (`open` on macOS, `xdg-open`
+  on Linux). Opening and copying URLs work directly from Instances/Services,
+  choosing the first public route sorted by service name, then a configured
+  endpoint if no public URL is available. URL/env views act on the selected
+  row; environment values are never passed to the browser.
 - Use `c` or `y` to copy a URL/env value and `Y` for `NAME=value`. Sensitive and
   inherited environment values start hidden; `v` reveals and `i` includes
   inherited values. Copy fetches the real value even while masked, without

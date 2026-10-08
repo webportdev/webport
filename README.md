@@ -86,6 +86,8 @@ If a skill file already exists, the command asks before replacing it. Use
 Run `webport tui` in an interactive terminal to browse all active development
 instances for your user, including configured sessions and command wrappers.
 The dashboard refreshes every two seconds and preserves the selected row.
+Bubble Tea and Lip Gloss provide styled tabs, readiness indicators, and a
+selection detail pane on wide terminals. Smaller terminals use a compact list.
 Use `--api URL` to select the daemon API; instance control remains local to
 this user's runtime directory.
 
@@ -96,13 +98,15 @@ the Daemon tab shows publication status and checks the local HTTPS listener.
 
 | Key | Action |
 | --- | --- |
-| Arrow keys or `j`/`k` | Select a row |
+| Arrow keys or `j`/`k`, mouse wheel | Select a row / scroll |
 | Enter | Open instance/service, or expand a long value |
+| `d` | Expand all selection details in a scrollable view |
 | Tab / Shift+Tab | Next / previous tab |
 | `1` / `2` / `3` | Instances / Routes / Daemon |
 | `s` / `u` / `e` | Services / URLs / Environment inside an instance |
 | `[` / `]` | Previous / next service |
 | `/` | Filter the current list; Enter finishes, Esc clears |
+| `o` | Open the selected URL in the browser |
 | `c` or `y` | Copy the selected URL or environment value |
 | `Y` | Copy the selected environment entry as `NAME=value` |
 | `v` / `i` | Reveal sensitive values / include inherited environment |
@@ -110,8 +114,13 @@ the Daemon tab shows publication status and checks the local HTTPS listener.
 | `y` or Enter / Esc | Confirm / cancel an instance action |
 | `?` | Scrollable hotkey help |
 | F5 | Refresh immediately |
+| `p` | Pause / resume automatic refresh (F5 still works) |
 | `q` or Ctrl+C | Quit the dashboard; instances keep running |
 
+URL opening/copying also works directly from the Instances and Services
+tabs, preferring the first public route (sorted by service name) and falling
+back to a configured endpoint. Opening uses `open` on macOS or `xdg-open` on
+Linux and accepts only HTTP(S) URLs without embedded credentials.
 Stop and restart apply to the entire instance, including its child services,
 and release its routes during cleanup. Sensitive and inherited values start
 hidden; copy fetches the real value without revealing it on screen. `v` controls

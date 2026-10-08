@@ -11,7 +11,6 @@ import (
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/webportdev/webport/internal/devsession/session"
 	"github.com/webportdev/webport/internal/devsession/state"
@@ -50,6 +49,9 @@ type confirmation struct {
 }
 
 type Model struct {
+	paused                                               bool
+	updatedAt                                            time.Time
+	open                                                 func(string) error
 	helpOffset                                           int
 	detail                                               string
 	fetching                                             bool
@@ -67,7 +69,7 @@ type Model struct {
 }
 
 func New(backend Backend, copy func(string) (string, error)) Model {
-	return Model{backend: backend, copy: copy, width: 80, height: 24, message: "Loading active instances…", loading: true, fetching: true, snapshotGeneration: 1}
+	return Model{open: OpenURL, backend: backend, copy: copy, width: 80, height: 24, message: "Loading active instances…", loading: true, fetching: true, snapshotGeneration: 1}
 }
 func (m Model) Init() tea.Cmd { return tea.Batch(m.fetch(), tick()) }
 func tick() tea.Cmd           { return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) }) }
@@ -117,6 +119,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case tickMsg:
+		if m.paused {
+			return m, tick()
+		}
 		cmd := m.refresh()
 		return m, tea.Batch(cmd, tick())
 	case snapshotMsg:
@@ -133,6 +138,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			selected = rows[m.cursor].id
 		}
 		m.snapshot = msg.Snapshot
+		m.updatedAt = time.Now()
 		if m.page <= daemonPage {
 			m.loading = false
 		}
@@ -160,6 +166,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.id != m.instanceID || msg.generation != m.generation {
 			return m, nil
 		}
+		selected := ""
+		if rows := m.rows(); m.cursor < len(rows) {
+			selected = rows[m.cursor].id
+		}
 		m.loading = false
 		if msg.err != nil {
 			m.message = "Inspection failed: " + msg.err.Error()
@@ -171,6 +181,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.cursor = min(m.cursor, max(0, len(m.rows())-1))
+		for i, r := range m.rows() {
+			if r.id == selected {
+				m.cursor = i
+				break
+			}
+		}
 	case resultMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -180,6 +196,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmd := m.refresh()
 		return m, cmd
+	case tea.MouseMsg:
+		if m.confirm != nil || m.searching {
+			return m, nil
+		}
+		delta := 0
+		if msg.Button == tea.MouseButtonWheelUp {
+			delta = -3
+		}
+		if msg.Button == tea.MouseButtonWheelDown {
+			delta = 3
+		}
+		if m.help || m.detail != "" {
+			m.helpOffset = min(m.overlayLimit(), max(0, m.helpOffset+delta))
+		} else {
+			m.cursor = min(max(0, len(m.rows())-1), max(0, m.cursor+delta))
+		}
 	case tea.KeyMsg:
 		key := msg.String()
 		if key == "ctrl+c" {
@@ -247,6 +279,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			m.help = true
 			m.helpOffset = 0
+		case "d":
+			if len(m.rows()) > 0 {
+				m.detail = ansi.Strip(strings.Join(m.detailLines(max(1, m.width-4)), "\n"))
+				m.helpOffset = 0
+			}
 		case "/":
 			m.searching = true
 		case "up", "k":
@@ -254,9 +291,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			m.cursor = min(max(0, len(m.rows())-1), m.cursor+1)
 		case "pgup":
-			m.cursor = max(0, m.cursor-max(1, m.height-14))
+			m.cursor = max(0, m.cursor-m.listCapacity())
 		case "pgdown":
-			m.cursor = min(max(0, len(m.rows())-1), m.cursor+max(1, m.height-14))
+			m.cursor = min(max(0, len(m.rows())-1), m.cursor+m.listCapacity())
 		case "home", "g":
 			m.cursor = 0
 		case "end", "G":
@@ -276,6 +313,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.navigate(instancesPage)
 			}
+		case "p":
+			m.paused = !m.paused
+			if !m.paused {
+				return m, m.refresh()
+			}
+		case "o":
+			value := m.selectedURL()
+			if value == "" {
+				m.message = "No URL available for this selection"
+				break
+			}
+			return m, func() tea.Msg { return resultMsg{message: "Opened URL in browser", err: m.open(value)} }
 		case "f5":
 			m.message = "Refreshing…"
 			cmd := m.refresh()
@@ -306,6 +355,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "tab", "shift+tab":
 			if m.page >= servicesPage {
+				if m.page == servicesPage {
+					if rows := m.rows(); m.cursor < len(rows) {
+						m.service = rows[m.cursor].id
+					}
+				}
 				p := m.page + 1
 				if key == "shift+tab" {
 					p = m.page - 1
@@ -420,6 +474,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.copyEnvironment(live, service, selected.id, key == "Y")
 			}
 			value := selected.value
+			if m.page == instancesPage || m.page == servicesPage {
+				value = m.selectedURL()
+			}
 			if value == "" {
 				m.message = "Select a URL or environment value to copy"
 				break
@@ -572,15 +629,11 @@ func clean(value string) string {
 	}, value)
 }
 
-var titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-var selectionStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("24"))
-var mutedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-
 const helpText = `Navigate
 ↑/↓ or j/k  Select a row       Enter  Open instance/service
 Tab / Shift+Tab  Next/previous tab    Esc  Back / clear filter
 1 Instances   2 Routes   3 Daemon     / Search this list
-PgUp/PgDn / Home/End  Jump through lists
+PgUp/PgDn / Home/End  Jump through lists   d Full selection details
 
 Instance details
 s Services   u URLs   e Environment   [ / ] Previous/next service
@@ -588,167 +641,36 @@ r Restart instance   x Kill (graceful stop)   y/Enter Confirm
 Actions apply to the entire selected instance, including its services.
 
 Copy
+o Open selected URL in browser
 c or y  Copy selected URL / env value   Y  Copy NAME=value
 Copy works while values stay hidden.
 v Reveal/hide sensitive env   i Include/exclude inherited env
 Native clipboard tools are used when available; otherwise OSC 52 is
 sent to your terminal. Clipboard support depends on the terminal.
 
+Mouse wheel Scroll   p Pause/resume automatic refresh
 F5 Refresh   q / Ctrl+C Quit dashboard (instances keep running)
 ? / Esc Close help`
 
 func (m Model) overlayLimit() int {
 	text := helpText
 	if m.detail != "" {
-		text = clean(m.detail)
+		text = m.detailText()
 	}
-	lines := strings.Split(ansi.Hardwrap(text, max(20, m.width-2), false), "\n")
+	lines := strings.Split(ansi.Hardwrap(text, max(1, m.width-4), false), "\n")
 	return max(0, len(lines)-max(1, m.height-5))
 }
 
-func (m Model) View() string {
-	width := max(20, m.width-2)
-	if m.width < 48 || m.height < 14 {
-		return "WEBPORT\nResize to at least 48 × 14.\nq Quit · ? Help\n"
+func (m Model) detailText() string {
+	lines := strings.Split(m.detail, "\n")
+	for i := range lines {
+		lines[i] = clean(lines[i])
 	}
-	header := titleStyle.Render("WEBPORT") + "  Development dashboard"
-	tabs := "1 Instances   2 Routes   3 Daemon"
-	switch m.page {
-	case instancesPage:
-		tabs = "[1 Instances]   2 Routes   3 Daemon"
-	case routesPage:
-		tabs = "1 Instances   [2 Routes]   3 Daemon"
-	case daemonPage:
-		tabs = "1 Instances   2 Routes   [3 Daemon]"
-	}
-	contextLine := "Auto-refresh every 2s · " + fmt.Sprintf("%d active instances · %d routes", len(m.snapshot.Instances), len(m.snapshot.Routes))
-	if m.page >= servicesPage {
-		live, _ := m.instance()
-		contextLine = clean(live.Worktree) + " · " + clean(live.Profile)
-		tabs = "s Services   u URLs   e Environment"
-		switch m.page {
-		case servicesPage:
-			tabs = "[s Services]   u URLs   e Environment"
-		case urlsPage:
-			tabs = "s Services   [u URLs]   e Environment"
-		case envPage:
-			tabs = "s Services   u URLs   [e Environment]"
-		}
-		if m.service != "" {
-			contextLine += " · " + clean(m.service)
-		}
-	}
-	if m.help || m.detail != "" {
-		text := helpText
-		if m.detail != "" {
-			text = clean(m.detail)
-		}
-		lines := strings.Split(ansi.Hardwrap(text, width, false), "\n")
-		capacity := max(1, m.height-5)
-		offset := min(m.helpOffset, max(0, len(lines)-capacity))
-		return header + "\n\n" + strings.Join(lines[offset:min(len(lines), offset+capacity)], "\n") + "\n\n↑↓ / PgUp PgDn Scroll · Esc Close\n"
-	}
-	rows := m.rows()
-	capacity := max(1, m.height-14)
-	start := 0
-	if m.cursor >= capacity {
-		start = m.cursor - capacity + 1
-	}
-	lines := make([]string, 0, capacity)
-	for i := start; i < min(len(rows), start+capacity); i++ {
-		prefix := "  "
-		if i == m.cursor {
-			prefix = "› "
-		}
-		line := ansi.Truncate(prefix+clean(rows[i].label), width, "…")
-		if i == m.cursor {
-			line = selectionStyle.Render(line)
-		}
-		lines = append(lines, line)
-	}
-	if len(rows) == 0 {
-		empty := "No matching rows. Esc clears the filter."
-		if m.filter == "" {
-			switch m.page {
-			case instancesPage:
-				empty = "No active instances. Start one with webport dev -d."
-			case routesPage:
-				empty = "No published routes. Start a server with webport dev."
-			case servicesPage:
-				empty = "No services in this instance."
-			case urlsPage:
-				empty = "No URLs for this service yet. Select another service with [ / ]."
-			case envPage:
-				empty = "No environment values available."
-			case daemonPage:
-				empty = "Daemon unavailable. Run webport doctor to diagnose."
-			}
-		}
-		if m.loading {
-			empty = "Loading…"
-		}
-		lines = append(lines, empty)
-	}
-	for len(lines) < capacity {
-		lines = append(lines, "")
-	}
-	preview := ""
-	if m.cursor < len(rows) {
-		preview = clean(rows[m.cursor].label)
-	}
-	preview = ansi.Truncate(preview, width*2, "…")
-	preview = ansi.Hardwrap(preview, width, false)
-	previewLines := strings.Split(preview, "\n")
-	for len(previewLines) < 2 {
-		previewLines = append(previewLines, "")
-	}
-	filter := "/ Search"
-	if m.filter != "" || m.searching {
-		filter = "/ " + clean(m.filter)
-		if m.searching {
-			filter += "▏  Enter done · Esc clear"
-		}
-	}
-	position := fmt.Sprintf("%d/%d", min(m.cursor+1, len(rows)), len(rows))
-	message := m.message
-	if m.snapshot.Error != "" {
-		contextLine += " · " + clean(m.snapshot.Error)
-	}
-	if m.page == envPage {
-		visibility := "sensitive hidden"
-		if m.sensitive {
-			visibility = "SENSITIVE SHOWN"
-		}
-		scope := "managed"
-		if m.inherited {
-			scope = "inherited included"
-		}
-		filter += " · " + visibility + " · " + scope
-	}
-	if m.confirm != nil {
-		message = fmt.Sprintf("%s %s (%s)? All services affected. y/Enter confirm · Esc cancel", strings.ToUpper(m.confirm.operation), filepath.Base(m.confirm.instance.Worktree), m.confirm.instance.Profile)
-	}
-	if m.busy {
-		message = "Working… " + message
-	}
-	hints := "↑↓ Select · Enter Open · r Restart · x Kill"
-	if m.page == routesPage {
-		hints = "↑↓ Select · c Copy URL"
-	}
-	if m.page == envPage || m.page == urlsPage {
-		hints = "Enter Expand · c Copy URL · [ / ] Service · Esc Back"
-		if m.page == envPage {
-			hints = "Enter Expand · c Copy · Y NAME=value · v Reveal · i Inherited"
-		}
-	}
-	if m.confirm != nil {
-		hints = "y / Enter Confirm · Esc Cancel"
-	}
-	return header + "\n" + ansi.Truncate(tabs, width, "…") + "\n" + mutedStyle.Render(ansi.Truncate(contextLine, width, "…")) + "\n\n" + strings.Join(lines, "\n") + "\n\n" + strings.Join(previewLines, "\n") + "\n" + mutedStyle.Render(ansi.Truncate(filter+" · "+position, width, "…")) + "\n" + ansi.Truncate(clean(message), width, "…") + "\n" + mutedStyle.Render(ansi.Truncate(hints, width, "…")) + "\n" + mutedStyle.Render(ansi.Truncate("? Help · q Quit · Tab Tabs · / Search · F5 Refresh", width, "…")) + "\n"
+	return strings.Join(lines, "\n")
 }
 
 func Run(in io.Reader, out io.Writer, backend Backend) error {
 	m := New(backend, func(value string) (string, error) { return Copy(out, value) })
-	_, err := tea.NewProgram(m, tea.WithInput(in), tea.WithOutput(out), tea.WithAltScreen()).Run()
+	_, err := tea.NewProgram(m, tea.WithInput(in), tea.WithOutput(out), tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err
 }
