@@ -29,10 +29,10 @@ Use Webport for local development servers and configured development sessions.
 ## Interactive dashboard
 
 - Use `webport tui` in a terminal to browse current-user configured sessions and
-  command wrappers, services, URLs, and live environment values. `--api URL`
+  command wrappers, services, URLs, saved logs, and live environment values. `--api URL`
   selects the daemon for route/status lookup; process control remains local.
 - Hotkeys are visible in the footer; `?` opens scrollable help. Use Enter to
-  open an instance/service, Tab to switch tabs, `s`/`u`/`e` for service/URL/env
+  open an instance/service, Tab to switch tabs, `s`/`u`/`e`/`l` for service/URL/env/log
   views, `[`/`]` to switch services, and `/` to filter rows. Enter also expands
   a long URL or environment entry.
 - Wide terminals show a selection detail pane with readiness, worktree,
@@ -40,6 +40,11 @@ Use Webport for local development servers and configured development sessions.
   Use the mouse wheel to scroll lists/help, `p` to pause/resume automatic
   refresh, and F5 to refresh immediately even while paused. `d` opens all
   selection details in a scrollable view, including on compact terminals.
+- The Logs tab shows the last 200 lines (up to 64 KiB) per saved service
+  stream, refreshing every two seconds. Stay at the bottom to follow output;
+  scroll back to read and press End to resume following. `[`/`]` switches
+  services. Disabled logging and wrappers without saved logs show an
+  unavailable message. Use `p` to pause or F5 to refresh logs manually.
 - Use `o` to open an HTTP(S) URL in the browser (`open` on macOS, `xdg-open`
   on Linux). Opening and copying URLs work directly from Instances/Services,
   choosing the first public route sorted by service name, then a configured

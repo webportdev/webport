@@ -28,6 +28,7 @@ type Backend interface {
 	Snapshot(context.Context) Snapshot
 	Inspect(context.Context, state.LiveState, bool, bool) (session.LiveInspection, error)
 	Control(context.Context, state.LiveState, string) error
+	Logs(context.Context, state.LiveState, string) ([]string, error)
 }
 
 type LocalBackend struct{ API string }

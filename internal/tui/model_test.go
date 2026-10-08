@@ -20,6 +20,9 @@ type fakeBackend struct {
 	sensitive, inherited bool
 }
 
+func (b *fakeBackend) Logs(context.Context, state.LiveState, string) ([]string, error) {
+	return []string{"output"}, nil
+}
 func (b *fakeBackend) Snapshot(context.Context) Snapshot { return Snapshot{} }
 func (b *fakeBackend) Inspect(_ context.Context, live state.LiveState, sensitive, inherited bool) (session.LiveInspection, error) {
 	b.inspectedID, b.sensitive, b.inherited = live.SessionID, sensitive, inherited
@@ -203,7 +206,7 @@ func TestCopyHiddenEnvironmentHandlesMissingEmptyAndLiteralPlaceholder(t *testin
 
 func TestDashboardLayoutsFitEveryPageAndOverlay(t *testing.T) {
 	for _, size := range [][2]int{{48, 14}, {60, 18}, {100, 24}, {140, 40}, {24, 8}} {
-		for p := instancesPage; p <= envPage; p++ {
+		for p := instancesPage; p <= logsPage; p++ {
 			for _, overlay := range []string{"", "help", "detail", "confirm"} {
 				m, _ := fixtureModel()
 				m.width, m.height, m.page = size[0], size[1], p

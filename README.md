@@ -92,8 +92,12 @@ Use `--api URL` to select the daemon API; instance control remains local to
 this user's runtime directory.
 
 The Instances tab shows project/branch, profile, readiness, and worktree.
-Press Enter to browse services, then use the URLs and Environment tabs for
-that service. The Routes tab lists all daemon routes, including manual routes;
+Press Enter to browse services, then use the URLs, Environment, and Logs tabs for
+that service. Logs show the last 200 lines (up to 64 KiB) of each saved stream
+and refresh every two seconds. Stay at the bottom to follow new output, or
+scroll back to read earlier lines; End resumes following. Use `[` / `]` to
+switch services. Logging-disabled services and wrappers without saved logs
+show an unavailable message. The Routes tab lists all daemon routes, including manual routes;
 the Daemon tab shows publication status and checks the local HTTPS listener.
 
 | Key | Action |
@@ -103,7 +107,7 @@ the Daemon tab shows publication status and checks the local HTTPS listener.
 | `d` | Expand all selection details in a scrollable view |
 | Tab / Shift+Tab | Next / previous tab |
 | `1` / `2` / `3` | Instances / Routes / Daemon |
-| `s` / `u` / `e` | Services / URLs / Environment inside an instance |
+| `s` / `u` / `e` / `l` | Services / URLs / Environment / Logs inside an instance |
 | `[` / `]` | Previous / next service |
 | `/` | Filter the current list; Enter finishes, Esc clears |
 | `o` | Open the selected URL in the browser |
@@ -142,7 +146,7 @@ webport upgrade [options]                    Upgrade using the saved configurati
 webport dev [options] -- COMMAND [ARG...]    Run and publish a dev server
 webport route --port PORT [options]          Publish an already-running server
 webport inspect [--config PATH] [options]    Show active URLs and project environment
-webport tui [--api URL]                       Manage instances and browse URLs/environment
+webport tui [--api URL]                       Manage instances and browse URLs/environment/logs
 webport list                                 List active routes
 webport status                               Show daemon/publication state
 webport doctor                               Test API, TLS, trust, and DNS

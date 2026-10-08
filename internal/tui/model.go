@@ -25,6 +25,7 @@ const (
 	servicesPage
 	urlsPage
 	envPage
+	logsPage
 )
 
 type row struct{ id, label, value string }
@@ -39,6 +40,13 @@ type inspectionMsg struct {
 	value      session.LiveInspection
 	err        error
 }
+type logsMsg struct {
+	id, service string
+	generation  int
+	lines       []string
+	err         error
+}
+
 type resultMsg struct {
 	message string
 	err     error
@@ -49,6 +57,10 @@ type confirmation struct {
 }
 
 type Model struct {
+	logLines                                             []string
+	logError                                             string
+	logGeneration                                        int
+	logFetching                                          bool
 	paused                                               bool
 	updatedAt                                            time.Time
 	open                                                 func(string) error
@@ -113,7 +125,31 @@ func (m *Model) inspect() tea.Cmd {
 		return inspectionMsg{live.SessionID, generation, value, err}
 	}
 }
-func (m *Model) navigate(p page) { m.page = p; m.cursor = 0; m.filter = ""; m.searching = false }
+func (m *Model) navigate(p page) {
+	m.page = p
+	m.cursor = 0
+	m.filter = ""
+	m.searching = false
+	m.logGeneration++
+	m.logFetching = false
+	m.logLines = nil
+	m.logError = ""
+}
+func (m *Model) fetchLogs() tea.Cmd {
+	live, ok := m.instance()
+	if m.page != logsPage || !ok || m.logFetching {
+		return nil
+	}
+	m.logFetching = true
+	m.logGeneration++
+	generation, service, backend := m.logGeneration, m.service, m.backend
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		lines, err := backend.Logs(ctx, live, service)
+		return logsMsg{live.SessionID, service, generation, lines, err}
+	}
+}
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -123,7 +159,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tick()
 		}
 		cmd := m.refresh()
-		return m, tea.Batch(cmd, tick())
+		return m, tea.Batch(cmd, m.fetchLogs(), tick())
 	case snapshotMsg:
 		if msg.generation != m.snapshotGeneration {
 			return m, nil
@@ -161,6 +197,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd := m.inspect()
 				return m, cmd
 			}
+		}
+	case logsMsg:
+		if m.page != logsPage || msg.id != m.instanceID || msg.service != m.service || msg.generation != m.logGeneration {
+			return m, nil
+		}
+		atEnd := m.cursor >= max(0, len(m.rows())-1)
+		m.logFetching = false
+		m.logError = ""
+		if msg.err != nil {
+			m.logError = msg.err.Error()
+		}
+		m.logLines = msg.lines
+		if atEnd {
+			m.cursor = max(0, len(m.rows())-1)
+		} else {
+			m.cursor = min(m.cursor, max(0, len(m.rows())-1))
 		}
 	case inspectionMsg:
 		if msg.id != m.instanceID || msg.generation != m.generation {
@@ -308,7 +360,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.filter != "" {
 				m.filter = ""
 				m.cursor = 0
-			} else if m.page == envPage || m.page == urlsPage {
+			} else if m.page == envPage || m.page == urlsPage || m.page == logsPage {
 				m.navigate(servicesPage)
 			} else {
 				m.navigate(instancesPage)
@@ -316,7 +368,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "p":
 			m.paused = !m.paused
 			if !m.paused {
-				return m, m.refresh()
+				return m, tea.Batch(m.refresh(), m.fetchLogs())
 			}
 		case "o":
 			value := m.selectedURL()
@@ -328,7 +380,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "f5":
 			m.message = "Refreshing…"
 			cmd := m.refresh()
-			return m, cmd
+			return m, tea.Batch(cmd, m.fetchLogs())
 		case "enter":
 			rows := m.rows()
 			if m.cursor >= len(rows) {
@@ -349,7 +401,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.page == servicesPage {
 				m.service = selected.id
 				m.navigate(urlsPage)
-			} else if m.page == envPage || m.page == urlsPage || m.page == routesPage || m.page == daemonPage {
+			} else if m.page == envPage || m.page == urlsPage || m.page == logsPage || m.page == routesPage || m.page == daemonPage {
 				m.detail = selected.label
 				m.helpOffset = 0
 			}
@@ -364,13 +416,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if key == "shift+tab" {
 					p = m.page - 1
 				}
-				if p > envPage {
+				if p > logsPage {
 					p = servicesPage
 				}
 				if p < servicesPage {
-					p = envPage
+					p = logsPage
 				}
 				m.navigate(p)
+				return m, m.fetchLogs()
 			} else {
 				p := (int(m.page) + 1) % 3
 				if key == "shift+tab" {
@@ -378,7 +431,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.navigate(page(p))
 			}
-		case "e", "u", "s":
+		case "e", "u", "s", "l":
 			if m.page >= servicesPage {
 				if m.page == servicesPage {
 					r := m.rows()
@@ -393,10 +446,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if key == "u" {
 					p = urlsPage
 				}
+				if key == "l" {
+					p = logsPage
+				}
 				m.navigate(p)
+				return m, m.fetchLogs()
 			}
 		case "[", "]":
-			if m.page == envPage || m.page == urlsPage {
+			if m.page == envPage || m.page == urlsPage || m.page == logsPage {
 				names := m.services()
 				if len(names) > 0 {
 					index := 0
@@ -413,6 +470,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.service = names[index]
 					m.cursor = 0
 					m.filter = ""
+					if m.page == logsPage {
+						m.navigate(logsPage)
+						return m, m.fetchLogs()
+					}
 				}
 			}
 		case "v", "i":
@@ -572,6 +633,10 @@ func (m Model) rows() []row {
 			rows = append(rows, row{name, name + "  ·  " + url, url})
 		}
 		sort.Slice(rows, func(i, j int) bool { return rows[i].id < rows[j].id })
+	case logsPage:
+		for i, line := range m.logLines {
+			rows = append(rows, row{fmt.Sprint(i), line, ""})
+		}
 	case envPage:
 		service := m.service
 		if service == "" {
@@ -636,7 +701,9 @@ Tab / Shift+Tab  Next/previous tab    Esc  Back / clear filter
 PgUp/PgDn / Home/End  Jump through lists   d Full selection details
 
 Instance details
-s Services   u URLs   e Environment   [ / ] Previous/next service
+s Services   u URLs   e Environment   l Logs
+[ / ] Previous/next service
+Logs show recent saved output; stay at the bottom to follow new output.
 r Restart instance   x Kill (graceful stop)   y/Enter Confirm
 Actions apply to the entire selected instance, including its services.
 

@@ -28,14 +28,14 @@ func pad(value string, width int) string {
 
 func (m Model) listCapacity() int { return max(1, m.height-12) }
 func (m Model) pageName() string {
-	return []string{"Instances", "Routes", "Daemon", "Services", "URLs", "Environment"}[m.page]
+	return []string{"Instances", "Routes", "Daemon", "Services", "URLs", "Environment", "Logs"}[m.page]
 }
 
 func (m Model) tabs() string {
 	labels := []string{"1 Instances", "2 Routes", "3 Daemon"}
 	active := int(m.page)
 	if m.page >= servicesPage {
-		labels = []string{"s Services", "u URLs", "e Environment"}
+		labels = []string{"s Services", "u URLs", "e Environment", "l Logs"}
 		active -= int(servicesPage)
 	}
 	for i, label := range labels {
@@ -115,6 +115,12 @@ func (m Model) rowLabel(r row, width int) string {
 }
 
 func (m Model) emptyText() string {
+	if m.page == logsPage && m.logError != "" {
+		return m.logError
+	}
+	if m.page == logsPage && m.logFetching && len(m.logLines) == 0 {
+		return "Loading logs…"
+	}
 	if m.loading {
 		return "Loading…"
 	}
@@ -128,6 +134,7 @@ func (m Model) emptyText() string {
 		"No services in this instance.",
 		"No URLs yet. Try another service with [ / ].",
 		"No environment values available.",
+		"No saved log output. Logging may be disabled or unavailable for this wrapper.",
 	}[m.page]
 }
 
@@ -201,7 +208,7 @@ func (m Model) detailLines(width int) []string {
 			add("URL · o Open · c Copy", value)
 		}
 		if value := live.LogPaths[r.id]; value != "" {
-			add("LOG FILE", value)
+			add("LOG FILE · l View logs", value)
 		}
 		names := make([]string, 0, len(live.Ports))
 		for name := range live.Ports {
@@ -285,7 +292,7 @@ func (m Model) View() string {
 	}
 	lines := []string{fit(header, width), fit(m.tabs(), width), fit(titleStyle.Render(summary), width), fit(mutedStyle.Render(context), width), ""}
 	bodyHeight := m.height - 9
-	if width >= 98 {
+	if width >= 98 && m.page != logsPage {
 		leftWidth := (width - 1) * 55 / 100
 		rightWidth := width - leftWidth - 1
 		left := panel(m.pageName(), m.listLines(leftWidth-2), leftWidth, bodyHeight)
@@ -329,6 +336,9 @@ func (m Model) View() string {
 	hints := "↑↓ Select · Enter Open · o Browser · c Copy · r Restart · x Stop"
 	if m.page == routesPage || m.page == urlsPage {
 		hints = "↑↓ Select · Enter Expand · o Browser · c Copy · Esc Back"
+	}
+	if m.page == logsPage {
+		hints = "↑↓ Scroll · End Follow · [ / ] Service · Esc Back"
 	}
 	if m.page == daemonPage {
 		hints = "↑↓ Select · Enter Expand · Esc Back"
