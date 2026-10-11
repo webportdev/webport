@@ -586,6 +586,41 @@ install_webport_binaries() {
 			for name in webport webportctl webport-dns; do install_extracted_binary "$extract" "$name" "$(path /usr/local/bin/$name)"; done
 			;;
 	esac
+	if (( UPGRADE )); then refresh_upgrade_path_binaries; fi
+}
+
+refresh_upgrade_path_binaries() {
+	local name installed destination directory temporary
+	for name in webport webportctl webport-dns; do
+		installed=$(path "/usr/local/bin/$name")
+		destination=$(command -v "$name" || true)
+		[[ -n "$destination" && -f "$destination" ]] || continue
+		directory=$(cd -- "$(dirname -- "$destination")" && pwd -P)
+		destination="$directory/$(basename -- "$destination")"
+		[[ "$destination" != "$installed" ]] || continue
+		[[ ! "$destination" -ef "$installed" ]] || continue
+		# A link to the managed binary already sees the upgrade. Preserve links
+		# and wrappers owned by package/version managers instead of replacing them.
+		if (( ! DRY_RUN )) && cmp -s "$installed" "$destination"; then continue; fi
+		if [[ -z "${HOME:-}" || "$HOME" == / || "$destination" != "${HOME%/}/"* ||
+			-L "$destination" || ! -O "$destination" || ! -w "$directory" ||
+			"$(LC_ALL=C head -c 2 "$destination")" == '#!' ]]; then
+			log "Warning: $destination shadows $installed on PATH; update or remove that copy to use the upgraded $name."
+			continue
+		fi
+		if (( DRY_RUN )); then
+			log "dry-run: refresh $name on PATH at $destination"
+			continue
+		fi
+		# Replace in the user's directory without sudo, atomically so an old
+		# CLI or development supervisor can keep running from its original inode.
+		temporary=$(mktemp "$directory/.webport-upgrade.XXXXXXXX")
+		if ! install -m 755 "$installed" "$temporary" || ! mv -f "$temporary" "$destination"; then
+			rm -f "$temporary"
+			die "could not refresh $name on PATH at $destination"
+		fi
+		log "Refreshed $name on PATH at $destination"
+	done
 }
 
 prepare_traefik_binary() {

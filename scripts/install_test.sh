@@ -185,6 +185,24 @@ cmp -s "$artifacts/webport" "$root/usr/local/bin/webport" ||
 assert_contains "$root/etc/webport/webport.env" "WEBPORT_TLS_MODE=local-ca"
 assert_contains "$root/etc/webport/webport.env" "WEBPORT_BASE_DOMAIN=webport.localhost"
 
+source "$SCRIPT_DIR/upgrade_path_test.sh"
+
+# Older CLIs use the installed bootstrap to download a fresh installer bundle.
+# The downloaded installer must refresh the shadowing PATH copy too.
+(
+	bootstrap_path_home="$tmp/bootstrap-path-home"
+	bootstrap_path_bin="$bootstrap_path_home/.local/bin"
+	mkdir -p "$bootstrap_path_bin"
+	cp "$(command -v bash)" "$bootstrap_path_bin/webport"
+	HOME="$bootstrap_path_home" PATH="$bootstrap_path_bin:$PATH" \
+	WEBPORT_VERSION=vtest WEBPORT_RELEASE_BASE_URL="file://$bootstrap_release" \
+	WEBPORT_INSTALL_ROOT="$root" "$SCRIPT_DIR/bootstrap-install.sh" \
+		--upgrade --mode webport --non-interactive --yes >"$tmp/bootstrap-path-upgrade.log"
+	cmp -s "$artifacts/webport" "$bootstrap_path_bin/webport" ||
+		fail "downloaded installer left a stale webport on PATH"
+	assert_contains "$tmp/bootstrap-path-upgrade.log" "Refreshed webport on PATH at $bootstrap_path_bin/webport"
+)
+
 expect_failure env WEBPORT_INSTALL_ROOT="$tmp/missing-upgrade" "$INSTALLER" \
 	--upgrade --webport-source local --traefik-source local --artifact-dir "$artifacts" \
 	--non-interactive --yes

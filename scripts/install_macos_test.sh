@@ -128,6 +128,8 @@ assert_contains "$root/usr/local/etc/webport/webport.env" "WEBPORT_TLS_MODE=acme
 assert_contains "$root/usr/local/etc/webport/webport.env" "WEBPORT_DNS_PROVIDER=cloudflare"
 assert_contains "$root/usr/local/etc/traefik/traefik.env" "CF_DNS_API_TOKEN=test-secret"
 
+source "$SCRIPT_DIR/upgrade_path_test.sh"
+
 root="$tmp/local-ca"
 WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
 	--mode full --tls-mode local-ca --base-domain webport.localhost \

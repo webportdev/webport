@@ -87,6 +87,11 @@ Use Webport for local development servers and configured development sessions.
   updates without writing. Running `webport dev` sessions keep their existing
   supervisor process until stopped and launched again; `webport inspect` can
   read older sessions.
+- Upgrades refresh user-owned binary copies found first on `PATH`, including
+  `~/.local/bin/webport`, without sudo. Symlinks, script wrappers, and binaries
+  outside the user's home are preserved, with a warning if they still shadow
+  `/usr/local/bin`. If the version stays old, compare `command -v webport` and
+  `/usr/local/bin/webport --version`, then resolve the reported shadowing copy.
 - For an active configured session, use `webport dev restart` to gracefully
   stop its services and leases, reload configuration, and start again with the
   active profile and service selection. The command acknowledges the request;

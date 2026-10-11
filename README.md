@@ -71,6 +71,13 @@ running keep their original process until restarted; `webport inspect` can
 still read their older session state. The upgrade does not change local-CA
 trust unless `--trust-local-ca` is explicitly supplied.
 
+Upgrades also refresh existing user-owned binary copies found first on `PATH`,
+such as `~/.local/bin/webport`, so `webport --version` reports the new release.
+These copies are replaced atomically without sudo. Symlinks, script wrappers,
+and copies outside your home directory are preserved; the installer reports
+when one still shadows the upgraded binary in `/usr/local/bin`.
+Use `command -v webport` to check which copy your shell runs.
+
 Install the Webport development skill for Codex, OpenCode, Pi, and Claude Code
 without installing or changing the Webport daemon stack:
 
