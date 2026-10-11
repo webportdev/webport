@@ -66,6 +66,7 @@ type Model struct {
 	open                                                 func(string) error
 	helpOffset                                           int
 	detail                                               string
+	detailURL                                            string
 	fetching                                             bool
 	snapshotGeneration                                   int
 	backend                                              Backend
@@ -313,6 +314,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "?", "esc", "q", "enter":
 				m.help = false
 				m.detail = ""
+				m.detailURL = ""
 				m.helpOffset = 0
 			case "down", "j":
 				m.helpOffset = min(m.helpOffset+1, m.overlayLimit())
@@ -333,7 +335,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.helpOffset = 0
 		case "d":
 			if len(m.rows()) > 0 {
-				m.detail = ansi.Strip(strings.Join(m.detailLines(max(1, m.width-4)), "\n"))
+				m.detail = ansi.Strip(strings.Join(m.detailLines(0), "\n"))
+				m.detailURL = m.selectedURL()
 				m.helpOffset = 0
 			}
 		case "/":
@@ -403,6 +406,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.navigate(urlsPage)
 			} else if m.page == envPage || m.page == urlsPage || m.page == logsPage || m.page == routesPage || m.page == daemonPage {
 				m.detail = selected.label
+				m.detailURL = m.selectedURL()
 				m.helpOffset = 0
 			}
 		case "tab", "shift+tab":
@@ -724,7 +728,7 @@ func (m Model) overlayLimit() int {
 	if m.detail != "" {
 		text = m.detailText()
 	}
-	lines := strings.Split(ansi.Hardwrap(text, max(1, m.width-4), false), "\n")
+	lines := linkedTextLines(text, m.detailURL, max(1, m.width-4))
 	return max(0, len(lines)-max(1, m.height-5))
 }
 

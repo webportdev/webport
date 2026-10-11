@@ -26,6 +26,40 @@ func pad(value string, width int) string {
 	return value + strings.Repeat(" ", max(0, width-ansi.StringWidth(value)))
 }
 
+// Only generate terminal hyperlinks from validated URLs, after treating all
+// display text as plain text. Close each line's link before padding or borders.
+func hyperlink(text, target string) string {
+	if text == "" || !validHTTPURL(target) {
+		return text
+	}
+	return ansi.SetHyperlink(target) + text + ansi.ResetHyperlink()
+}
+
+func linkedTextLines(text, target string, width int) []string {
+	var lines []string
+	for _, source := range strings.Split(text, "\n") {
+		source = clean(source)
+		start, end := -1, -1
+		if validHTTPURL(target) {
+			start = strings.Index(source, target)
+			end = start + len(target)
+		}
+		offset := 0
+		for _, part := range strings.Split(ansi.Hardwrap(source, width, false), "\n") {
+			// Hardwrap may discard spaces at the beginning of a new line.
+			offset += strings.Index(source[offset:], part)
+			left, right := max(0, start-offset), min(len(part), end-offset)
+			line := part
+			if start >= 0 && left < right {
+				line = part[:left] + hyperlink(part[left:right], target) + part[right:]
+			}
+			lines = append(lines, line)
+			offset += len(part)
+		}
+	}
+	return lines
+}
+
 func (m Model) listCapacity() int { return max(1, m.height-12) }
 func (m Model) pageName() string {
 	return []string{"Instances", "Routes", "Daemon", "Services", "URLs", "Environment", "Logs"}[m.page]
@@ -111,6 +145,12 @@ func (m Model) rowLabel(r row, width int) string {
 		nameWidth := max(8, width-ansi.StringWidth(status)-3)
 		return pad(plain(r.id, nameWidth), nameWidth) + "  " + status
 	}
+	if m.page == routesPage || m.page == urlsPage {
+		label := clean(r.label)
+		if before, after, ok := strings.Cut(label, r.value); ok && validHTTPURL(r.value) {
+			return fit(before+hyperlink(r.value, r.value)+after, width)
+		}
+	}
 	return plain(r.label, width)
 }
 
@@ -149,7 +189,9 @@ func (m Model) listLines(width int) []string {
 		if i == m.cursor {
 			prefix = "› "
 			// One continuous highlight, even over an independently styled badge.
-			label = ansi.Strip(label)
+			if m.page != routesPage && m.page != urlsPage {
+				label = ansi.Strip(label)
+			}
 			lines = append(lines, selectionStyle.Render(pad(fit(prefix+label, width), width)))
 		} else {
 			lines = append(lines, fit(prefix+label, width))
@@ -170,7 +212,12 @@ func (m Model) detailLines(width int) []string {
 	var lines []string
 	add := func(label, value string) {
 		lines = append(lines, mutedStyle.Render(label))
-		lines = append(lines, strings.Split(ansi.Hardwrap(clean(value), max(1, width), false), "\n")...)
+		lines = append(lines, linkedTextLines(clean(value), "", width)...)
+		lines = append(lines, "")
+	}
+	addURL := func(value string) {
+		lines = append(lines, mutedStyle.Render("URL · o Open · c Copy"))
+		lines = append(lines, linkedTextLines(clean(value), value, width)...)
 		lines = append(lines, "")
 	}
 	var live state.LiveState
@@ -194,7 +241,7 @@ func (m Model) detailLines(width int) []string {
 			add("STARTED", live.StartedAt.Local().Format("Jan 02 15:04:05"))
 		}
 		if value := instanceURL(live, ""); value != "" {
-			add("URL · o Open · c Copy", value)
+			addURL(value)
 		}
 		if live.LastError != "" {
 			add("ERROR", live.LastError)
@@ -205,7 +252,7 @@ func (m Model) detailLines(width int) []string {
 		add("STATE", s.State)
 		add("PROCESS", fmt.Sprintf("PID %d", s.PID))
 		if value := instanceURL(live, r.id); value != "" {
-			add("URL · o Open · c Copy", value)
+			addURL(value)
 		}
 		if value := live.LogPaths[r.id]; value != "" {
 			add("LOG FILE · l View logs", value)
@@ -225,7 +272,7 @@ func (m Model) detailLines(width int) []string {
 		for _, route := range m.snapshot.Routes {
 			if route.Project+":"+route.Branch == r.id {
 				add("ROUTE ID", r.id)
-				add("URL · o Open · c Copy", r.value)
+				addURL(r.value)
 				add("BACKEND", fmt.Sprintf("%s:%d", backendHost(route.Host), route.Port))
 				add("SOURCE", route.Source)
 				if !route.ExpiresAt.IsZero() {
@@ -236,7 +283,7 @@ func (m Model) detailLines(width int) []string {
 		}
 	case urlsPage:
 		add("ENDPOINT", r.id)
-		add("URL · o Open · c Copy", r.value)
+		addURL(r.value)
 	case envPage:
 		add("ENVIRONMENT KEY", r.id)
 		add("VALUE · c Copy · Y Copy entry", r.value)
@@ -265,7 +312,7 @@ func (m Model) View() string {
 			text = m.detailText()
 			title = "Selected value"
 		}
-		lines := strings.Split(ansi.Hardwrap(text, width-2, false), "\n")
+		lines := linkedTextLines(text, m.detailURL, width-2)
 		capacity := max(1, m.height-5)
 		offset := min(m.helpOffset, max(0, len(lines)-capacity))
 		return fit(header, width) + "\n" + panel(title, lines[offset:min(len(lines), offset+capacity)], width, m.height-3) + "\n" + fit(mutedStyle.Render("↑↓ / PgUp PgDn Scroll · Esc Close"), width)

@@ -125,6 +125,9 @@ URL opening/copying also works directly from the Instances and Services
 tabs, preferring the first public route (sorted by service name) and falling
 back to a configured endpoint. Opening uses `open` on macOS or `xdg-open` on
 Linux and accepts only HTTP(S) URLs without embedded credentials.
+Displayed URLs use OSC 8 terminal hyperlinks, so clicking a wrapped or
+truncated URL opens the full address in terminals that support them. In other
+terminals, use `o` to open the selected URL or `c` to copy it.
 Stop and restart apply to the entire instance, including its child services,
 and release its routes during cleanup. Sensitive and inherited values start
 hidden; copy fetches the real value without revealing it on screen. `v` controls

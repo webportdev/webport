@@ -50,6 +50,9 @@ Use Webport for local development servers and configured development sessions.
   choosing the first public route sorted by service name, then a configured
   endpoint if no public URL is available. URL/env views act on the selected
   row; environment values are never passed to the browser.
+- Displayed URLs use OSC 8 hyperlinks: terminal link clicks open the full URL
+  even when its text wraps or is truncated. This requires terminal support;
+  use `o` or `c` as a fallback.
 - Use `c` or `y` to copy a URL/env value and `Y` for `NAME=value`. Sensitive and
   inherited environment values start hidden; `v` reveals and `i` includes
   inherited values. Copy fetches the real value even while masked, without

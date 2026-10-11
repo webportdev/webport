@@ -9,14 +9,19 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/webportdev/webport/internal/devsession/state"
 )
 
+func validHTTPURL(value string) bool {
+	parsed, err := url.Parse(value)
+	return err == nil && (parsed.Scheme == "https" || parsed.Scheme == "http") && parsed.Host != "" && parsed.User == nil && strings.IndexFunc(value, unicode.IsControl) < 0
+}
+
 // OpenURL passes an HTTP URL as one argument, never through a shell.
 func OpenURL(value string) error {
-	parsed, err := url.Parse(value)
-	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil {
+	if !validHTTPURL(value) {
 		return fmt.Errorf("only HTTP(S) URLs without credentials can be opened")
 	}
 	command := "xdg-open"
