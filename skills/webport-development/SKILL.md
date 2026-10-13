@@ -56,8 +56,10 @@ Use Webport for local development servers and configured development sessions.
 - Use `c` or `y` to copy a URL/env value and `Y` for `NAME=value`. Sensitive and
   inherited environment values start hidden; `v` reveals and `i` includes
   inherited values. Copy fetches the real value even while masked, without
-  revealing it on screen; `v` only changes display visibility. Clipboard fallback uses
-  OSC 52, which requires terminal support.
+  revealing it on screen; `v` only changes display visibility. Copy sends an
+  OSC 52 clipboard request, including over SSH. The terminal must support and
+  allow clipboard writes; the dashboard reports the request without confirming
+  acceptance.
 - `r` restarts and `x` gracefully kills the selected instance after confirmation
   (`y`/Enter accepts; Esc cancels). These actions affect the entire instance.
   `q` exits only the dashboard. Routes without a session owner are read-only;

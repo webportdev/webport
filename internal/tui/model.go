@@ -716,8 +716,8 @@ o Open selected URL in browser
 c or y  Copy selected URL / env value   Y  Copy NAME=value
 Copy works while values stay hidden.
 v Reveal/hide sensitive env   i Include/exclude inherited env
-Native clipboard tools are used when available; otherwise OSC 52 is
-sent to your terminal. Clipboard support depends on the terminal.
+Copy sends an OSC 52 clipboard request to your terminal.
+The terminal must support and allow clipboard writes.
 
 Mouse wheel Scroll   p Pause/resume automatic refresh
 F5 Refresh   q / Ctrl+C Quit dashboard (instances keep running)

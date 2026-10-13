@@ -138,9 +138,10 @@ terminals, use `o` to open the selected URL or `c` to copy it.
 Stop and restart apply to the entire instance, including its child services,
 and release its routes during cleanup. Sensitive and inherited values start
 hidden; copy fetches the real value without revealing it on screen. `v` controls
-display visibility independently. Copy uses
-`pbcopy`, `wl-copy`, `xclip`, or `xsel` when available, with an OSC 52 terminal
-clipboard request as the fallback (terminal support is required).
+display visibility independently. Copy sends an OSC 52 clipboard request to
+your terminal, including over SSH. The terminal must support and allow clipboard
+writes; the dashboard reports that the request was sent because acceptance
+cannot be confirmed.
 
 Instances started before this feature may lack wrapper metadata or restart
 support. Start them again with the updated binary to enable management. Manual
