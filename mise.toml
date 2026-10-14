@@ -1,4 +1,5 @@
 [tools]
+gh = "latest"
 go="latest"
 
 [tasks.all]
