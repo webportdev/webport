@@ -17,6 +17,11 @@ cleanup() {
 	[[ -z "$webport_pid" ]] || kill "$webport_pid" >/dev/null 2>&1 || true
 	[[ -z "$traefik_pid" ]] || kill "$traefik_pid" >/dev/null 2>&1 || true
 	[[ -z "$backend_pid" ]] || kill "$backend_pid" >/dev/null 2>&1 || true
+	# webport publishes a route-free configuration during graceful shutdown;
+	# wait for it so removal cannot race that final write.
+	for pid in $webport_pid $traefik_pid $backend_pid; do
+		wait "$pid" >/dev/null 2>&1 || true
+	done
 	if [[ "${KEEP_TMP:-0}" == 1 ]]; then
 		printf 'integration test files retained at %s\n' "$tmp" >&2
 	else
