@@ -79,10 +79,13 @@ type Model struct {
 	searching, help, sensitive, inherited, loading, busy bool
 	generation                                           int
 	confirm                                              *confirmation
+	offset                                               int
+	now                                                  func() time.Time
+	lastClick                                            click
 }
 
 func New(backend Backend, copy func(string) (string, error)) Model {
-	return Model{open: OpenURL, backend: backend, copy: copy, width: 80, height: 24, message: "Loading active instances…", loading: true, fetching: true, snapshotGeneration: 1}
+	return Model{open: OpenURL, now: time.Now, backend: backend, copy: copy, width: 80, height: 24, message: "Loading active instances…", loading: true, fetching: true, snapshotGeneration: 1}
 }
 func (m Model) Init() tea.Cmd { return tea.Batch(m.fetch(), tick()) }
 func tick() tea.Cmd           { return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) }) }
@@ -152,6 +155,12 @@ func (m *Model) fetchLogs() tea.Cmd {
 	}
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.update(msg)
+	next := updated.(Model)
+	next.offset = next.listStart()
+	return next, cmd
+}
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -250,21 +259,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.refresh()
 		return m, cmd
 	case tea.MouseMsg:
-		if m.confirm != nil || m.searching {
-			return m, nil
-		}
-		delta := 0
-		if msg.Button == tea.MouseButtonWheelUp {
-			delta = -3
-		}
-		if msg.Button == tea.MouseButtonWheelDown {
-			delta = 3
-		}
-		if m.help || m.detail != "" {
-			m.helpOffset = min(m.overlayLimit(), max(0, m.helpOffset+delta))
-		} else {
-			m.cursor = min(max(0, len(m.rows())-1), max(0, m.cursor+delta))
-		}
+		return m.mouse(msg)
 	case tea.KeyMsg:
 		key := msg.String()
 		if key == "ctrl+c" {
@@ -385,37 +380,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd := m.refresh()
 			return m, tea.Batch(cmd, m.fetchLogs())
 		case "enter":
-			rows := m.rows()
-			if m.cursor >= len(rows) {
-				break
-			}
-			selected := rows[m.cursor]
-			if m.page == instancesPage {
-				m.instanceID = selected.id
-				m.service = ""
-				if names := m.services(); len(names) > 0 {
-					m.service = names[0]
-				}
-				m.inspection = session.LiveInspection{}
-				m.navigate(servicesPage)
-				cmd := m.inspect()
-				return m, cmd
-			}
-			if m.page == servicesPage {
-				m.service = selected.id
-				m.navigate(urlsPage)
-			} else if m.page == envPage || m.page == urlsPage || m.page == logsPage || m.page == routesPage || m.page == daemonPage {
-				m.detail = selected.label
-				m.detailURL = m.selectedURL()
-				m.helpOffset = 0
-			}
+			cmd := m.activate()
+			return m, cmd
 		case "tab", "shift+tab":
 			if m.page >= servicesPage {
-				if m.page == servicesPage {
-					if rows := m.rows(); m.cursor < len(rows) {
-						m.service = rows[m.cursor].id
-					}
-				}
 				p := m.page + 1
 				if key == "shift+tab" {
 					p = m.page - 1
@@ -426,8 +394,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if p < servicesPage {
 					p = logsPage
 				}
-				m.navigate(p)
-				return m, m.fetchLogs()
+				return m, m.openTab(p)
 			} else {
 				p := (int(m.page) + 1) % 3
 				if key == "shift+tab" {
@@ -437,12 +404,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "e", "u", "s", "l":
 			if m.page >= servicesPage {
-				if m.page == servicesPage {
-					r := m.rows()
-					if m.cursor < len(r) {
-						m.service = r[m.cursor].id
-					}
-				}
 				p := servicesPage
 				if key == "e" {
 					p = envPage
@@ -453,8 +414,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if key == "l" {
 					p = logsPage
 				}
-				m.navigate(p)
-				return m, m.fetchLogs()
+				return m, m.openTab(p)
 			}
 		case "[", "]":
 			if m.page == envPage || m.page == urlsPage || m.page == logsPage {
@@ -517,39 +477,86 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirm = &confirmation{operation, live}
 			}
 		case "c", "y", "Y":
-			rows := m.rows()
-			if m.cursor >= len(rows) {
-				m.message = "Nothing to copy"
-				break
-			}
-			selected := rows[m.cursor]
-			if m.page == envPage {
-				live, ok := m.instance()
-				if !ok {
-					m.message = "Instance is no longer active"
-					break
-				}
-				service := m.service
-				if service == "" {
-					names := m.services()
-					if len(names) > 0 {
-						service = names[0]
-					}
-				}
-				return m, m.copyEnvironment(live, service, selected.id, key == "Y")
-			}
-			value := selected.value
-			if m.page == instancesPage || m.page == servicesPage {
-				value = m.selectedURL()
-			}
-			if value == "" {
-				m.message = "Select a URL or environment value to copy"
-				break
-			}
-			return m, func() tea.Msg { message, err := m.copy(value); return resultMsg{message, err} }
+			cmd := m.copySelected(key == "Y")
+			return m, cmd
 		}
 	}
 	return m, nil
+}
+
+// activate opens the selected instance or service, or expands the selected
+// value. Enter and a double click share it.
+func (m *Model) activate() tea.Cmd {
+	rows := m.rows()
+	if m.cursor >= len(rows) {
+		return nil
+	}
+	selected := rows[m.cursor]
+	switch m.page {
+	case instancesPage:
+		m.instanceID = selected.id
+		m.service = ""
+		if names := m.services(); len(names) > 0 {
+			m.service = names[0]
+		}
+		m.inspection = session.LiveInspection{}
+		m.navigate(servicesPage)
+		return m.inspect()
+	case servicesPage:
+		m.service = selected.id
+		m.navigate(urlsPage)
+	default:
+		m.detail = selected.label
+		m.detailURL = m.selectedURL()
+		m.helpOffset = 0
+	}
+	return nil
+}
+
+// openTab switches between instance tabs, keeping the selected service when
+// leaving the Services tab.
+func (m *Model) openTab(p page) tea.Cmd {
+	if m.page == servicesPage {
+		if rows := m.rows(); m.cursor < len(rows) {
+			m.service = rows[m.cursor].id
+		}
+	}
+	m.navigate(p)
+	return m.fetchLogs()
+}
+
+func (m *Model) copySelected(entry bool) tea.Cmd {
+	rows := m.rows()
+	if m.cursor >= len(rows) {
+		m.message = "Nothing to copy"
+		return nil
+	}
+	selected := rows[m.cursor]
+	if m.page == envPage {
+		live, ok := m.instance()
+		if !ok {
+			m.message = "Instance is no longer active"
+			return nil
+		}
+		service := m.service
+		if service == "" {
+			names := m.services()
+			if len(names) > 0 {
+				service = names[0]
+			}
+		}
+		return m.copyEnvironment(live, service, selected.id, entry)
+	}
+	value := selected.value
+	if m.page == instancesPage || m.page == servicesPage {
+		value = m.selectedURL()
+	}
+	if value == "" {
+		m.message = "Select a URL or environment value to copy"
+		return nil
+	}
+	write := m.copy
+	return func() tea.Msg { message, err := write(value); return resultMsg{message, err} }
 }
 
 // Fetch cleartext only for this clipboard operation. It never enters the model
@@ -719,7 +726,12 @@ v Reveal/hide sensitive env   i Include/exclude inherited env
 Copy sends an OSC 52 clipboard request to your terminal.
 The terminal must support and allow clipboard writes.
 
-Mouse wheel Scroll   p Pause/resume automatic refresh
+Mouse
+Click  Select a row, tab, search, or footer action
+Double-click  Open instance/service · copy URL/env value · expand log/status
+Wheel  Scroll   Back button  Back
+
+p Pause/resume automatic refresh
 F5 Refresh   q / Ctrl+C Quit dashboard (instances keep running)
 ? / Esc Close help`
 

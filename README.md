@@ -77,6 +77,8 @@ These copies are replaced atomically without sudo. Symlinks, script wrappers,
 and copies outside your home directory are preserved; the installer reports
 when one still shadows the upgraded binary in `/usr/local/bin`.
 Use `command -v webport` to check which copy your shell runs.
+An already-open `webport tui` also keeps its original binary. Quit the dashboard
+with `q` and launch `webport tui` again to pick up an upgrade.
 
 Install the Webport development skill for Codex, OpenCode, Pi, and Claude Code
 without installing or changing the Webport daemon stack:
@@ -109,7 +111,8 @@ the Daemon tab shows publication status and checks the local HTTPS listener.
 
 | Key | Action |
 | --- | --- |
-| Arrow keys or `j`/`k`, mouse wheel | Select a row / scroll |
+| Arrow keys or `j`/`k`, mouse wheel, click | Select a row / scroll |
+| Double-click a row | Open an instance/service, copy a URL or environment value, or expand a log line/status |
 | Enter | Open instance/service, or expand a long value |
 | `d` | Expand all selection details in a scrollable view |
 | Tab / Shift+Tab | Next / previous tab |
@@ -127,6 +130,13 @@ the Daemon tab shows publication status and checks the local HTTPS listener.
 | F5 | Refresh immediately |
 | `p` | Pause / resume automatic refresh (F5 still works) |
 | `q` or Ctrl+C | Quit the dashboard; instances keep running |
+
+Mouse clicks also switch tabs, start a search from the `/ Search` line, and run
+the clicked footer hint (for example `c Copy` or `? Help`). The mouse back
+button acts like Esc. A pending stop or restart ignores row clicks and wheel
+scrolling; only its Confirm or Cancel hint, or the keyboard, completes it.
+Mouse reporting captures clicks, so hold Shift (Option on macOS Terminal) to
+select text with the terminal itself.
 
 URL opening/copying also works directly from the Instances and Services
 tabs, preferring the first public route (sorted by service name) and falling

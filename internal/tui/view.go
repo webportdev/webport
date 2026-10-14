@@ -60,18 +60,47 @@ func linkedTextLines(text, target string, width int) []string {
 	return lines
 }
 
+// Screen rows above the first list row: header, tabs, summary, context, gap,
+// panel border, and list title.
+const listTop = 7
+
+const footerHints = "? Help · q Quit · d Details · Tab Tabs · p Pause · F5 Refresh"
+const overlayHints = "↑↓ / PgUp PgDn Scroll · Esc Close"
+
 func (m Model) listCapacity() int { return max(1, m.height-12) }
+
+// listStart keeps the previous scroll position while the cursor stays visible,
+// so clicking a row never shifts the rows under the pointer.
+func (m Model) listStart() int {
+	capacity := m.listCapacity()
+	start := min(max(m.offset, m.cursor-capacity+1), m.cursor)
+	return max(0, min(start, len(m.rows())-capacity))
+}
+
+// listWidth is the outer width of the list panel, beside the detail pane on
+// wide terminals.
+func (m Model) listWidth() (list, details int) {
+	width := max(1, m.width-2)
+	if width >= 98 && m.page != logsPage {
+		list = (width - 1) * 55 / 100
+		return list, width - list - 1
+	}
+	return width, 0
+}
 func (m Model) pageName() string {
 	return []string{"Instances", "Routes", "Daemon", "Services", "URLs", "Environment", "Logs"}[m.page]
 }
 
-func (m Model) tabs() string {
-	labels := []string{"1 Instances", "2 Routes", "3 Daemon"}
-	active := int(m.page)
+func (m Model) tabLabels() (labels []string, first page) {
 	if m.page >= servicesPage {
-		labels = []string{"s Services", "u URLs", "e Environment", "l Logs"}
-		active -= int(servicesPage)
+		return []string{"s Services", "u URLs", "e Environment", "l Logs"}, servicesPage
 	}
+	return []string{"1 Instances", "2 Routes", "3 Daemon"}, instancesPage
+}
+
+func (m Model) tabs() string {
+	labels, first := m.tabLabels()
+	active := int(m.page - first)
 	for i, label := range labels {
 		if i == active {
 			labels[i] = selectionStyle.Render(" " + label + " ")
@@ -181,7 +210,7 @@ func (m Model) emptyText() string {
 func (m Model) listLines(width int) []string {
 	rows := m.rows()
 	capacity := m.listCapacity()
-	start := max(0, m.cursor-capacity+1)
+	start := m.listStart()
 	lines := []string{mutedStyle.Render(pad("  "+m.pageName(), max(1, width-12)) + fmt.Sprintf("%d/%d", min(m.cursor+1, len(rows)), len(rows)))}
 	for i := start; i < min(len(rows), start+capacity); i++ {
 		label := m.rowLabel(rows[i], width-2)
@@ -307,7 +336,7 @@ func (m Model) View() string {
 	header := titleStyle.Render("◆ WEBPORT") + mutedStyle.Render("  /  development dashboard")
 	if m.help || m.detail != "" {
 		text := helpText
-		title := "Keyboard shortcuts"
+		title := "Keyboard and mouse"
 		if m.detail != "" {
 			text = m.detailText()
 			title = "Selected value"
@@ -315,7 +344,7 @@ func (m Model) View() string {
 		lines := linkedTextLines(text, m.detailURL, width-2)
 		capacity := max(1, m.height-5)
 		offset := min(m.helpOffset, max(0, len(lines)-capacity))
-		return fit(header, width) + "\n" + panel(title, lines[offset:min(len(lines), offset+capacity)], width, m.height-3) + "\n" + fit(mutedStyle.Render("↑↓ / PgUp PgDn Scroll · Esc Close"), width)
+		return fit(header, width) + "\n" + panel(title, lines[offset:min(len(lines), offset+capacity)], width, m.height-3) + "\n" + fit(mutedStyle.Render(overlayHints), width)
 	}
 
 	refresh := "LIVE · 2s"
@@ -339,9 +368,7 @@ func (m Model) View() string {
 	}
 	lines := []string{fit(header, width), fit(m.tabs(), width), fit(titleStyle.Render(summary), width), fit(mutedStyle.Render(context), width), ""}
 	bodyHeight := m.height - 9
-	if width >= 98 && m.page != logsPage {
-		leftWidth := (width - 1) * 55 / 100
-		rightWidth := width - leftWidth - 1
+	if leftWidth, rightWidth := m.listWidth(); rightWidth > 0 {
 		left := panel(m.pageName(), m.listLines(leftWidth-2), leftWidth, bodyHeight)
 		right := panel("Selection details", m.detailLines(rightWidth-2), rightWidth, bodyHeight)
 		lines = append(lines, strings.Split(lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right), "\n")...)
@@ -380,26 +407,31 @@ func (m Model) View() string {
 	if m.snapshot.Error != "" || strings.HasPrefix(m.message, "Failed:") || strings.HasPrefix(m.message, "Inspection failed:") {
 		messageLine = warningStyle.Render(messageLine)
 	}
-	hints := "↑↓ Select · Enter Open · o Browser · c Copy · r Restart · x Stop"
-	if m.page == routesPage || m.page == urlsPage {
-		hints = "↑↓ Select · Enter Expand · o Browser · c Copy · Esc Back"
-	}
-	if m.page == logsPage {
-		hints = "↑↓ Scroll · End Follow · [ / ] Service · Esc Back"
-	}
-	if m.page == daemonPage {
-		hints = "↑↓ Select · Enter Expand · Esc Back"
-	}
-	if m.page == envPage {
-		hints = "Enter Expand · c Copy · Y NAME=value · v Reveal · i Inherited"
-	}
 	if m.busy {
 		messageLine = warningStyle.Render(plain("Working… "+message, width))
 	}
 	if m.confirm != nil {
 		messageLine = warningStyle.Render(plain(fmt.Sprintf("%s %s (%s)? All services affected.", strings.ToUpper(m.confirm.operation), instanceName(m.confirm.instance), m.confirm.instance.Profile), width))
-		hints = "y / Enter Confirm · n / Esc Cancel"
 	}
-	lines = append(lines, fit(mutedStyle.Render(filter), width), messageLine, fit(mutedStyle.Render(hints), width), fit(mutedStyle.Render("? Help · q Quit · d Details · Tab Tabs · p Pause · F5 Refresh"), width))
+	lines = append(lines, fit(mutedStyle.Render(filter), width), messageLine, fit(mutedStyle.Render(m.hints()), width), fit(mutedStyle.Render(footerHints), width))
 	return strings.Join(lines, "\n")
+}
+
+// hints lists page actions as " · "-separated "key Label" segments; each
+// segment is also a mouse target for its key.
+func (m Model) hints() string {
+	if m.confirm != nil {
+		return "y / Enter Confirm · n / Esc Cancel"
+	}
+	switch m.page {
+	case routesPage, urlsPage:
+		return "↑↓ Select · Enter Expand · o Browser · c Copy · Esc Back"
+	case logsPage:
+		return "↑↓ Scroll · End Follow · [ / ] Service · Esc Back"
+	case daemonPage:
+		return "↑↓ Select · Enter Expand · Esc Back"
+	case envPage:
+		return "Enter Expand · c Copy · Y NAME=value · v Reveal · i Inherited"
+	}
+	return "↑↓ Select · Enter Open · o Browser · c Copy · r Restart · x Stop"
 }

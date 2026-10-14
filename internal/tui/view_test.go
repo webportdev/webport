@@ -5,12 +5,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 	"github.com/webportdev/webport/internal/devsession/state"
 	"github.com/webportdev/webport/internal/route"
 )
 
 func TestLongURLLinksSurviveWrappingClippingAndOverlays(t *testing.T) {
+	profile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(profile) })
 	domain := strings.Repeat("long-project-branch-", 6) + "example.test"
 	target := "https://" + domain
 	for _, width := range []int{48, 100, 140} {
