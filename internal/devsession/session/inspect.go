@@ -235,7 +235,7 @@ func Control(ctx context.Context, options Options, operation string, payload map
 	}
 	live, err := store.ReadLive()
 	if err != nil {
-		return state.Response{}, fmt.Errorf("no live development session: %w", err)
+		return state.Response{}, fmt.Errorf("%w: %w", ErrNoLiveSession, err)
 	}
 	return state.Dial(ctx, live.ControlPath, live.ControlToken, state.Request{Operation: operation, Payload: payload})
 }

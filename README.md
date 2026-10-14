@@ -233,6 +233,7 @@ webport dev exec backend -- go test ./... # run a one-off command in the service
 webport dev -d                           # start a detached configured session
 webport dev restart                      # gracefully restart the active configured session
 webport dev stop                         # request graceful session shutdown
+webport dev stop myapp:feature/auth      # stop any instance publishing that route
 webport dev clean --secrets              # explicitly remove project secrets
 ```
 
@@ -240,7 +241,12 @@ Sessions run in the foreground by default. Use `-d` (or `--detach`) to
 run in the background; startup waits for readiness and prints the supervisor
 PID, log path, published service URLs, and configured endpoint URLs.
 `webport -d` is a shorthand for `webport dev -d`. Configured sessions still support status, logs, stop, and
-restart from another terminal. Restart preserves the active profile and service
+restart from another terminal. `webport dev stop` and `webport dev restart`
+also control command wrappers: without arguments they use the configured
+session for the current worktree, then the only wrapper running there. Pass a
+`PROJECT:BRANCH` route ID to target any current-user session or wrapper. When
+the choice is ambiguous, the command fails and lists the candidates' routes or
+supervisor PIDs instead of guessing. Restart preserves the active profile and service
 selection and reloads configuration after graceful cleanup. `--` always
 selects the original wrapper path, so `webport dev -- npm run dev` remains
 valid even when a configuration file is present. Status/config output is

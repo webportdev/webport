@@ -26,45 +26,6 @@ Use Webport for local development servers and configured development sessions.
   or `--format`.
 - Treat the printed `WEBPORT_URL` or route URL as the public development URL.
 
-## Interactive dashboard
-
-- Use `webport tui` in a terminal to browse current-user configured sessions and
-  command wrappers, services, URLs, saved logs, and live environment values. `--api URL`
-  selects the daemon for route/status lookup; process control remains local.
-- Hotkeys are visible in the footer; `?` opens scrollable help. Use Enter to
-  open an instance/service, Tab to switch tabs, `s`/`u`/`e`/`l` for service/URL/env/log
-  views, `[`/`]` to switch services, and `/` to filter rows. Enter also expands
-  a long URL or environment entry.
-- Wide terminals show a selection detail pane with readiness, worktree,
-  backend, and service information. Compact terminals show a single list.
-  Use the mouse wheel to scroll lists/help, `p` to pause/resume automatic
-  refresh, and F5 to refresh immediately even while paused. `d` opens all
-  selection details in a scrollable view, including on compact terminals.
-- The Logs tab shows the last 200 lines (up to 64 KiB) per saved service
-  stream, refreshing every two seconds. Stay at the bottom to follow output;
-  scroll back to read and press End to resume following. `[`/`]` switches
-  services. Disabled logging and wrappers without saved logs show an
-  unavailable message. Use `p` to pause or F5 to refresh logs manually.
-- Use `o` to open an HTTP(S) URL in the browser (`open` on macOS, `xdg-open`
-  on Linux). Opening and copying URLs work directly from Instances/Services,
-  choosing the first public route sorted by service name, then a configured
-  endpoint if no public URL is available. URL/env views act on the selected
-  row; environment values are never passed to the browser.
-- Displayed URLs use OSC 8 hyperlinks: terminal link clicks open the full URL
-  even when its text wraps or is truncated. This requires terminal support;
-  use `o` or `c` as a fallback.
-- Use `c` or `y` to copy a URL/env value and `Y` for `NAME=value`. Sensitive and
-  inherited environment values start hidden; `v` reveals and `i` includes
-  inherited values. Copy fetches the real value even while masked, without
-  revealing it on screen; `v` only changes display visibility. Copy sends an
-  OSC 52 clipboard request, including over SSH. The terminal must support and
-  allow clipboard writes; the dashboard reports the request without confirming
-  acceptance.
-- `r` restarts and `x` gracefully kills the selected instance after confirmation
-  (`y`/Enter accepts; Esc cancels). These actions affect the entire instance.
-  `q` exits only the dashboard. Routes without a session owner are read-only;
-  older wrappers need to be started again to expose TUI control.
-
 ## Inspect and troubleshoot
 
 - Run `webport inspect` from the current project to see active HTTPS URLs and
@@ -82,32 +43,31 @@ Use Webport for local development servers and configured development sessions.
   environment output. Use `webport dev config` to preview an inactive session.
 - Use `webport status`, `webport config`, and `webport doctor` for daemon and
   route problems.
-- `webport upgrade` replaces the installed `webport`, `webportctl`, and
-  `webport-dns` binaries and refreshes already-installed Webport skills for the
-  invoking user without prompting, including locally edited skill files.
-  Absent skill installations are left untouched; `--dry-run` reports planned
-  updates without writing. Running `webport dev` sessions keep their existing
-  supervisor process until stopped and launched again; `webport inspect` can
-  read older sessions.
-- Upgrades refresh user-owned binary copies found first on `PATH`, including
-  `~/.local/bin/webport`, without sudo. Symlinks, script wrappers, and binaries
-  outside the user's home are preserved, with a warning if they still shadow
-  `/usr/local/bin`. If the version stays old, compare `command -v webport` and
-  `/usr/local/bin/webport --version`, then resolve the reported shadowing copy.
-- For an active configured session, use `webport dev restart` to gracefully
-  stop its services and leases, reload configuration, and start again with the
-  active profile and service selection. The command acknowledges the request;
-  use `webport dev status` and `webport dev logs SERVICE --follow` to verify
-  readiness or diagnose restart failures. Use `--config PATH` for another
-  configured project.
-- Use `webport dev stop` to request a graceful configured session stop from
-  another terminal. These control commands work for foreground and detached
-  configured sessions. Manage command wrappers through `webport tui`, or
-  send SIGTERM to the printed supervisor PID for detached-wrapper cleanup.
-- Restart reuses the running supervisor binary. After `webport upgrade`, stop
-  and launch the session again to use the newly installed binary.
 - If a route is missing, first check that the client or session is still
   running and renewing its lease; manual routes expire unless refreshed.
+- `webport upgrade` replaces the installed binaries and refreshes installed
+  Webport skills; `--dry-run` previews it. If `webport --version` stays old,
+  compare `command -v webport` with `/usr/local/bin/webport --version` and
+  resolve the shadowing copy the upgrade reported.
+- `webport tui` is an interactive dashboard for people. Do not launch it from
+  an agent; it takes over the terminal and does not exit on its own.
+
+## Stop and restart
+
+- `webport dev stop` and `webport dev restart` request a graceful stop or
+  restart of a foreground or detached configured session or command wrapper.
+  Without arguments they target the current worktree's configured session,
+  then its only command wrapper. Use `--config PATH` for another configured
+  project, or a route ID such as `webport dev stop myapp:feature/auth` to
+  target any instance from any directory.
+- If the target is ambiguous, the error lists route IDs or supervisor PIDs;
+  pass one route, or send SIGTERM to the listed PID.
+- Both commands only acknowledge the request. Verify with `webport dev status`
+  or `webport list`, and diagnose restart failures with
+  `webport dev logs SERVICE --follow`.
+- A configured restart reloads configuration and keeps the active profile and
+  service selection. Restart reuses the running supervisor binary, so after
+  `webport upgrade` stop and launch the session again.
 
 ## Routes and safety
 
@@ -120,13 +80,3 @@ Use Webport for local development servers and configured development sessions.
   discovery. Use `webportctl` only when the process context cannot be wrapped.
 - Do not put DNS provider credentials or other secrets in command-line
   arguments. Use the installer’s credentials-file workflow.
-
-## Repository changes
-
-When changing Webport itself, read the repository `AGENTS.md`, preserve
-deterministic Traefik output and atomic publication, and run focused Go tests
-before the full test suite. Changes to installer or platform assets also need
-the relevant installer test.
-
-When adding or changing features, update this skill and any affected supporting
-resources in the same change so installed agent guidance matches the CLI.

@@ -16,6 +16,9 @@ import (
 	"github.com/webportdev/webport/internal/devsession/state"
 )
 
+// wrapperProfile marks command-wrapper metadata among development instances.
+const wrapperProfile = "command wrapper"
+
 func wrapperStore() (*state.Store, error) {
 	root, err := gitdetect.FindWorktreeRoot(".")
 	if err != nil {
@@ -43,7 +46,7 @@ func startWrapperControl(store *state.Store, resolution wrapperResolution, value
 		return nil, err
 	}
 	live := state.LiveState{
-		SessionID: sessionID, Worktree: store.WorktreeRoot, Profile: "command wrapper", StartedAt: time.Now(),
+		SessionID: sessionID, Worktree: store.WorktreeRoot, Profile: wrapperProfile, StartedAt: time.Now(),
 		PIDs:     []state.ProcessIdentity{state.IdentifyProcess(os.Getpid()), state.IdentifyProcess(command.Process.Pid)},
 		Services: map[string]state.ServiceState{"command": {State: "ready", PID: command.Process.Pid, Ready: true, StartedAt: time.Now()}},
 		Routes:   map[string]state.RouteState{"command": {State: "active", Project: values.project, Branch: values.branch, Host: resolution.Host, URL: resolution.URL}},

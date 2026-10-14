@@ -36,7 +36,7 @@ func TestWrapperHTTPHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-func TestWrapperLifecycleRestartAndStopViaDashboard(t *testing.T) {
+func TestWrapperLifecycleRestartViaDashboardAndStopViaCLI(t *testing.T) {
 	runtime, err := os.MkdirTemp("", "wp-wrap-")
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestWrapperLifecycleRestartAndStopViaDashboard(t *testing.T) {
 	if second.SessionID == first.SessionID {
 		t.Fatal("restart did not replace session identity")
 	}
-	if err := backend.Control(ctx, second, "stop"); err != nil {
+	if err := runDevInspection("stop", []string{"wrapper-test:main"}, "", "", daemon.URL, "bash", "", false, false, nil, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	select {

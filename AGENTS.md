@@ -233,6 +233,10 @@ perform their own narrowly scoped elevation.
   limitations, and supporting resources consistent with the implementation;
   `skills/webport-development/SKILL.md` is bundled in releases and installed
   for supported agents. Validate changed skills before releasing.
+- The skill documents non-interactive commands an agent can run. Keep
+  interactive-only behavior, such as `webport tui` keys and mouse actions, in
+  the README; the skill only tells agents not to launch the dashboard. Give
+  every TUI operation agents may need a CLI equivalent.
 
 - Keep platform-specific discovery behind the existing build-tagged files.
 - Preserve deterministic Traefik output and atomic publication.

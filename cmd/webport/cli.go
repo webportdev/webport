@@ -56,6 +56,7 @@ Usage:
   webport -d [options] [SERVICE]
   webport dev [options] [SERVICE]
   webport dev check|config|status|env|logs|stop|restart [options]
+  webport dev stop|restart [PROJECT:BRANCH]
   webport dev exec SERVICE -- COMMAND [ARG...]
   webport dev clean --secrets [options]
   webport dev [options] -- COMMAND [ARG...]
@@ -546,20 +547,9 @@ func runDevInspection(operation string, operationArgs []string, configPath, prof
 		_, err = io.WriteString(out, rendered)
 		return err
 	case "stop", "restart":
-		if len(operationArgs) > 0 {
-			return fmt.Errorf("webport dev %s accepts no arguments", operation)
-		}
 		stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		response, err := devsession.Control(stopContext, options, operation, nil)
-		if err != nil {
-			return err
-		}
-		if !response.OK {
-			return errors.New(response.Error)
-		}
-		_, err = fmt.Fprintf(out, "development session %s requested\n", operation)
-		return err
+		return runDevControl(stopContext, operation, operationArgs, options, out)
 	case "logs":
 		service := ""
 		follow := false

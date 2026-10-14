@@ -118,12 +118,18 @@ plain file logs. Then verify:
   control token or generated secret.
 - [ ] `webport dev env` redacts sensitive values by default and
   `--show-sensitive` is required for an interactive reveal.
-- [ ] `webport dev logs SERVICE` reads plain output and `--follow` continues
-  across bounded log rotation.
+- [ ] With no service `logs` block, `webport dev logs SERVICE` reads the
+  private managed log and `--follow` continues across bounded rotation.
+- [ ] Explicit `none` disables retrieval, while `file` and `directory`
+  destinations remain readable through `webport dev logs SERVICE`.
 - [ ] `webport dev exec SERVICE -- COMMAND` uses the service directory and
   resolved environment without entering a container implicitly.
 - [ ] `webport dev stop` performs graceful, bounded shutdown and removes live
   state/exports while retaining logs and the redacted final record.
+- [ ] `webport dev stop` and `webport dev restart` without arguments control
+  the only command wrapper in a worktree without `.webport.yaml`, and
+  `webport dev stop PROJECT:BRANCH` stops a wrapper from another directory.
+  Two wrappers in one worktree fail with their route IDs.
 - [ ] `webport dev clean --secrets` removes project-lifetime secrets only
   after the session is inactive, including when cleanup races a new launch.
 - [ ] Existing `webport dev -- COMMAND` behavior is unchanged with or without
