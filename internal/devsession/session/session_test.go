@@ -348,3 +348,18 @@ env:
 		t.Fatalf("CleanSecrets() error = %v", err)
 	}
 }
+
+func TestRouteErrorClearsAfterRecovery(t *testing.T) {
+	last, copied := syncRouteError("", "", "heartbeat lease: daemon unavailable")
+	if last != "heartbeat lease: daemon unavailable" {
+		t.Fatalf("route failure not reported: %q", last)
+	}
+	if last, copied = syncRouteError(last, copied, ""); last != "" || copied != "" {
+		t.Fatalf("recovered route kept error %q", last)
+	}
+	last, copied = syncRouteError("", "", "lease failed")
+	last = "export failed"
+	if last, _ = syncRouteError(last, copied, ""); last != "export failed" {
+		t.Fatalf("recovery cleared an unrelated error: %q", last)
+	}
+}

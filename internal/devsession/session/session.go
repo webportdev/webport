@@ -445,18 +445,21 @@ func runOnce(ctx context.Context, options Options, restart *atomic.Bool) (runErr
 	if err := stateStore.PruneSessionLogs(id.SessionID); err != nil {
 		return err
 	}
+	routeError := ""
 	refreshRoutes := func() {
 		if routeManager == nil {
 			return
 		}
+		current := ""
 		for name, entry := range routeManager.Snapshot() {
 			value := live.Routes[name]
 			value.State = string(entry.State)
 			live.Routes[name] = value
 			if entry.Error != "" {
-				live.LastError = entry.Error
+				current = entry.Error
 			}
 		}
+		live.LastError, routeError = syncRouteError(live.LastError, routeError, current)
 	}
 	var stateErr error
 	writeLive := func() {
@@ -788,4 +791,17 @@ func copyIntMap(input map[string]int) map[string]int {
 		result[name] = value
 	}
 	return result
+}
+
+// syncRouteError copies a current route failure into the session error and
+// clears it once every route recovers, unless another error replaced it.
+// copied is the route error previously written to lastError.
+func syncRouteError(lastError, copied, current string) (string, string) {
+	if current != "" {
+		return current, current
+	}
+	if copied != "" && lastError == copied {
+		return "", ""
+	}
+	return lastError, ""
 }

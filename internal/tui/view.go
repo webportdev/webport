@@ -142,10 +142,13 @@ func readiness(live state.LiveState) string {
 		}
 	}
 	text := fmt.Sprintf("%d/%d ready", ready, len(live.Services))
-	if failed {
+	allReady := ready == len(live.Services) && ready > 0
+	// A ready instance with an error, such as a recovering route lease, is
+	// degraded rather than failed.
+	if failed && !allReady {
 		return badStyle.Render("● " + text)
 	}
-	if ready == len(live.Services) && ready > 0 {
+	if allReady && !failed {
 		return goodStyle.Render("● " + text)
 	}
 	return warningStyle.Render("◐ " + text)

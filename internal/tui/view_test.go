@@ -116,3 +116,20 @@ func TestTerminalHyperlinksRejectUnsafeURLsAndEnvironmentValues(t *testing.T) {
 		}
 	}
 }
+
+func TestReadinessIsGreenOnlyWithoutErrorsAndRedOnlyWhenNotReady(t *testing.T) {
+	ready := map[string]state.ServiceState{"web": {Ready: true}}
+	for _, test := range []struct {
+		live state.LiveState
+		want string
+	}{
+		{state.LiveState{Services: ready}, goodStyle.Render("● 1/1 ready")},
+		{state.LiveState{Services: ready, LastError: "heartbeat lease: daemon unavailable"}, warningStyle.Render("◐ 1/1 ready")},
+		{state.LiveState{Services: map[string]state.ServiceState{"web": {LastError: "exited"}}}, badStyle.Render("● 0/1 ready")},
+		{state.LiveState{Services: map[string]state.ServiceState{"web": {}}}, warningStyle.Render("◐ 0/1 ready")},
+	} {
+		if got := readiness(test.live); got != test.want {
+			t.Fatalf("readiness(%+v) = %q, want %q", test.live, got, test.want)
+		}
+	}
+}
