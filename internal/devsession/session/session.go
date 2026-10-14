@@ -367,6 +367,7 @@ func runOnce(ctx context.Context, options Options, restart *atomic.Bool) (runErr
 		return err
 	}
 	live.ControlPath, live.ControlToken = control.Path(), control.Token()
+	control.StartLink(&stateStore)
 	last := state.LastSession{SessionID: id.SessionID, Worktree: id.WorktreeRoot, Profile: resolvedPlan.Profile, StartedAt: live.StartedAt}
 	retainLast := cfg.Session.RetainLastSummary == nil || *cfg.Session.RetainLastSummary
 	defer func() {

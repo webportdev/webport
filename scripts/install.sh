@@ -261,6 +261,10 @@ else
 	local_ca_path=/etc/traefik/dynamic/webport-pki
 fi
 
+# The developer who installs webport owns the daemon socket: sessions and
+# "webport webui" commands from this UID are admitted.
+owner_uid=${SUDO_UID:-$(id -u)}
+
 read_config_value() {
 	local key=$1 file=$2 line=
 	if [[ -r "$file" ]]; then
@@ -368,6 +372,7 @@ check_prerequisites() {
 	done
 	if [[ "$WEBPORT_SOURCE" == build && "$MODE" != traefik ]]; then
 		command -v go >/dev/null 2>&1 || missing+=("go")
+		command -v npm >/dev/null 2>&1 || missing+=("npm")
 	fi
 	if [[ "$MODE" != webport && "$TRAEFIK_SOURCE" == release ]]; then
 		for command in curl tar; do command -v "$command" >/dev/null 2>&1 || missing+=("$command"); done
@@ -558,6 +563,9 @@ install_webport_binaries() {
 	local os arch version base archive extract
 	case "$WEBPORT_SOURCE" in
 		build)
+			# The web UI is embedded into webport and must be built first.
+			run npm --prefix "$REPO_DIR/webui" ci
+			run npm --prefix "$REPO_DIR/webui" run build
 			run go build -o "$BUILD_DIR/webport" "$REPO_DIR/cmd/webport"
 			run go build -o "$BUILD_DIR/webportctl" "$REPO_DIR/cmd/webportctl"
 			run go build -o "$BUILD_DIR/webport-dns" "$REPO_DIR/cmd/webport-dns"
@@ -797,9 +805,9 @@ migrate_existing_webport() {
 	[[ -x "$installed_webport" && -f "$old_env" ]] || return 0
 	filtered="$BUILD_DIR/webport.env.migrated"
 	if [[ -r "$old_env" ]]; then
-		grep -Ev '^(WEBPORT_CADDY|WEBPORT_TLS_DNS|WEBPORT_TLS_MODE=|WEBPORT_LOCAL_CA_DIR=|WEBPORT_TRAEFIK_|WEBPORT_DNS_PROVIDER=|WEBPORT_DNS_CREDENTIALS_FILE=)' "$old_env" >"$filtered" || true
+		grep -Ev '^(WEBPORT_CADDY|WEBPORT_TLS_DNS|WEBPORT_TLS_MODE=|WEBPORT_LOCAL_CA_DIR=|WEBPORT_TRAEFIK_|WEBPORT_DNS_PROVIDER=|WEBPORT_DNS_CREDENTIALS_FILE=|WEBPORT_OWNER_UID=)' "$old_env" >"$filtered" || true
 	else
-		sudo grep -Ev '^(WEBPORT_CADDY|WEBPORT_TLS_DNS|WEBPORT_TLS_MODE=|WEBPORT_LOCAL_CA_DIR=|WEBPORT_TRAEFIK_|WEBPORT_DNS_PROVIDER=|WEBPORT_DNS_CREDENTIALS_FILE=)' "$old_env" >"$filtered" || true
+		sudo grep -Ev '^(WEBPORT_CADDY|WEBPORT_TLS_DNS|WEBPORT_TLS_MODE=|WEBPORT_LOCAL_CA_DIR=|WEBPORT_TRAEFIK_|WEBPORT_DNS_PROVIDER=|WEBPORT_DNS_CREDENTIALS_FILE=|WEBPORT_OWNER_UID=)' "$old_env" >"$filtered" || true
 	fi
 	content="$(<"$filtered")
 WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH=$traefik_dynamic_path
@@ -809,6 +817,7 @@ WEBPORT_TLS_MODE=$TLS_MODE
 WEBPORT_LOCAL_CA_DIR=$local_ca_path
 WEBPORT_DNS_PROVIDER=$PROVIDER
 WEBPORT_DNS_CREDENTIALS_FILE=$traefik_credentials_path
+WEBPORT_OWNER_UID=$owner_uid
 "
 	write_file "$old_env" 600 "$content"
 	if [[ "$PLATFORM" == darwin ]]; then
@@ -967,6 +976,7 @@ WEBPORT_TTL_CHECK_INTERVAL=10s
 WEBPORT_SHUTDOWN_TIMEOUT=5s
 WEBPORT_DISCOVERY_ENABLED=false
 WEBPORT_DISCOVERY_INTERVAL=2s
+WEBPORT_OWNER_UID=$owner_uid
 WEBPORT_DNS_PROVIDER=$PROVIDER
 WEBPORT_DNS_CREDENTIALS_FILE=$credentials_path
 WEBPORT_DNS_ZONE=$DNS_ZONE
@@ -984,6 +994,10 @@ WEBPORT_DNS_ZONE=$DNS_ZONE
 			privileged chmod 0640 "$webport_config_path"
 			privileged mkdir -p /usr/local/var/log/webport
 			privileged chown _webport:staff /usr/local/var/log/webport
+			# Daemon state and its session socket; not writable by other users.
+			privileged mkdir -p /usr/local/var/webport
+			privileged chown _webport:staff /usr/local/var/webport
+			privileged chmod 0755 /usr/local/var/webport
 		fi
 	fi
 	daemon_reload

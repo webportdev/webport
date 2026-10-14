@@ -99,6 +99,7 @@ func startWrapperControl(store *state.Store, resolution wrapperResolution, value
 		return nil, err
 	}
 	live.ControlPath, live.ControlToken = control.Path(), control.Token()
+	control.StartLink(store)
 	if err := store.WriteLive(live); err != nil {
 		_ = control.Close()
 		return nil, err

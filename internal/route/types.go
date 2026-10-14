@@ -10,6 +10,8 @@ import (
 const (
 	SourceManual  = "manual"
 	SourceProcess = "process"
+	// SourceSystem routes belong to the daemon itself, such as its web UI.
+	SourceSystem  = "system"
 	MaxTTLSeconds = 24 * 60 * 60
 )
 
@@ -55,6 +57,11 @@ func (r Route) IsDiscovered() bool {
 	return r.Source == SourceProcess
 }
 
+// IsSystem reports whether the daemon owns the route.
+func (r Route) IsSystem() bool {
+	return r.Source == SourceSystem
+}
+
 // RouteID is the composite key for routes
 type RouteID struct {
 	Project string
@@ -91,6 +98,18 @@ type RegisterRequest struct {
 	Branch  string `json:"branch"  validate:"required"`
 	Port    int    `json:"port"    validate:"required,min=1,max=65535"`
 	TTL     int    `json:"ttl"` // Seconds, defaults to WEBPORT_DEFAULT_TTL
+	// Subdomain optionally replaces the generated hostname label. Only the
+	// daemon's own system routes set it; the route identity is still
+	// project:branch and is never derived from the hostname.
+	Subdomain string `json:"-"`
+}
+
+// validSubdomainPattern matches one lowercase DNS label.
+var validSubdomainPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// ValidSubdomain reports whether value is a single lowercase DNS label.
+func ValidSubdomain(value string) bool {
+	return validSubdomainPattern.MatchString(value)
 }
 
 // Validate checks if the request is valid
@@ -112,6 +131,9 @@ func (r *RegisterRequest) Validate() error {
 	}
 	if r.TTL < 0 || r.TTL > MaxTTLSeconds {
 		return fmt.Errorf("ttl must be between 0 and %d seconds", MaxTTLSeconds)
+	}
+	if r.Subdomain != "" && !ValidSubdomain(r.Subdomain) {
+		return fmt.Errorf("subdomain '%s' must be one lowercase DNS label (letters, digits, and inner dashes)", r.Subdomain)
 	}
 	return nil
 }

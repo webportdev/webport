@@ -22,10 +22,17 @@ type Claim struct {
 	Project  string
 	Branch   string
 	Port     int
-	TTL      time.Duration
-	Expires  time.Time
-	Legacy   bool
+	// Subdomain optionally replaces the generated hostname label.
+	Subdomain string
+	TTL       time.Duration
+	Expires   time.Time
+	Legacy    bool
+	// System claims belong to the daemon and never expire.
+	System bool
 }
+
+// systemExpiry keeps system claims inside every "not yet expired" check.
+var systemExpiry = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Controller serializes manual-route state changes with Traefik publication.
 // Process-discovered routes remain in Store and are preserved by every manual
@@ -197,7 +204,7 @@ func (c *Controller) CreateLease(clientID string, req RegisterRequest, baseDomai
 	}
 	if leaseID, ok := c.clients[clientID]; ok {
 		claim := c.claims[leaseID]
-		if claim.Project != req.Project || claim.Branch != req.Branch || claim.Port != req.Port {
+		if claim.Project != req.Project || claim.Branch != req.Branch || claim.Port != req.Port || claim.Subdomain != req.Subdomain {
 			return Claim{}, Route{}, false, fmt.Errorf("%w: client_id is already registered with different route data", ErrConflict)
 		}
 		claim.TTL = ttl
@@ -213,7 +220,7 @@ func (c *Controller) CreateLease(clientID string, req RegisterRequest, baseDomai
 	}
 	claim := Claim{
 		LeaseID: leaseID, ClientID: clientID, Project: req.Project, Branch: req.Branch,
-		Port: req.Port, TTL: ttl, Expires: now.Add(ttl),
+		Port: req.Port, Subdomain: req.Subdomain, TTL: ttl, Expires: now.Add(ttl),
 	}
 	c.claims[leaseID] = claim
 	c.clients[clientID] = leaseID
@@ -224,6 +231,49 @@ func (c *Controller) CreateLease(clientID string, req RegisterRequest, baseDomai
 		return Claim{}, Route{}, false, err
 	}
 	return claim, routes[RouteID{Project: req.Project, Branch: req.Branch}], true, nil
+}
+
+// SetSystemRoute publishes or replaces a daemon-owned route that never
+// expires. It fails with ErrConflict when another route has the hostname.
+func (c *Controller) SetSystemRoute(req RegisterRequest, baseDomain string, now time.Time) (Route, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	id := RouteID{Project: req.Project, Branch: req.Branch}
+	leaseID := "system:" + id.String()
+	previous, hadPrevious := c.claims[leaseID]
+	c.claims[leaseID] = Claim{
+		LeaseID: leaseID, Project: req.Project, Branch: req.Branch, Port: req.Port,
+		Subdomain: req.Subdomain, Expires: systemExpiry, System: true,
+	}
+	routes, err := c.applyLocked(baseDomain, now)
+	if err != nil {
+		if hadPrevious {
+			c.claims[leaseID] = previous
+		} else {
+			delete(c.claims, leaseID)
+		}
+		return Route{}, err
+	}
+	return routes[id], nil
+}
+
+// DeleteSystemRoute removes a daemon-owned route.
+func (c *Controller) DeleteSystemRoute(id RouteID, baseDomain string, now time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	leaseID := "system:" + id.String()
+	previous, ok := c.claims[leaseID]
+	if !ok {
+		return nil
+	}
+	delete(c.claims, leaseID)
+	if _, err := c.applyLocked(baseDomain, now); err != nil {
+		c.claims[leaseID] = previous
+		return err
+	}
+	return nil
 }
 
 func (c *Controller) HeartbeatLease(leaseID string, requestedTTL time.Duration, now time.Time, baseDomain string) (Claim, Route, error) {
@@ -267,7 +317,7 @@ func (c *Controller) Expire(now time.Time, baseDomain string) (int, error) {
 
 	var expired []Claim
 	for leaseID, claim := range c.claims {
-		if !now.Before(claim.Expires) {
+		if !claim.System && !now.Before(claim.Expires) {
 			expired = append(expired, claim)
 			delete(c.claims, leaseID)
 			if claim.Legacy {
@@ -346,7 +396,7 @@ func (c *Controller) applyLocked(baseDomain string, now time.Time) (map[RouteID]
 			continue
 		}
 		id := RouteID{Project: claim.Project, Branch: claim.Branch}
-		domain, err := BuildDomainChecked(baseDomain, claim.Project, claim.Branch)
+		domain, err := BuildRouteDomain(baseDomain, claim.Project, claim.Branch, claim.Subdomain)
 		if err != nil {
 			return nil, err
 		}
@@ -355,6 +405,9 @@ func (c *Controller) applyLocked(baseDomain string, now time.Time) (map[RouteID]
 		}
 		domainOwners[strings.ToLower(domain)] = id
 		if existing, exists := manual[id]; exists {
+			if existing.Domain != domain {
+				return nil, fmt.Errorf("%w: route %s is already claimed with hostname %s", ErrConflict, id.String(), existing.Domain)
+			}
 			if existing.Port != claim.Port {
 				return nil, fmt.Errorf("%w: route %s is already claimed on port %d", ErrConflict, id.String(), existing.Port)
 			}
@@ -364,10 +417,14 @@ func (c *Controller) applyLocked(baseDomain string, now time.Time) (map[RouteID]
 			}
 			continue
 		}
-		manual[id] = Route{
+		item := Route{
 			Project: claim.Project, Branch: claim.Branch, Port: claim.Port,
 			Domain: domain, ExpiresAt: claim.Expires, Source: SourceManual,
 		}
+		if claim.System {
+			item.ExpiresAt, item.Source = time.Time{}, SourceSystem
+		}
+		manual[id] = item
 	}
 
 	desired := make([]Route, 0, len(manual))
@@ -406,7 +463,7 @@ func (c *Controller) refreshRouteLocked(id RouteID, baseDomain string, now time.
 			continue
 		}
 		if selected == nil {
-			domain, err := BuildDomainChecked(baseDomain, claim.Project, claim.Branch)
+			domain, err := BuildRouteDomain(baseDomain, claim.Project, claim.Branch, claim.Subdomain)
 			if err != nil {
 				return Route{}, err
 			}
@@ -418,6 +475,9 @@ func (c *Controller) refreshRouteLocked(id RouteID, baseDomain string, now time.
 		}
 		if selected.Port != claim.Port {
 			return Route{}, fmt.Errorf("%w: route %s is claimed on different ports", ErrConflict, id.String())
+		}
+		if domain, err := BuildRouteDomain(baseDomain, claim.Project, claim.Branch, claim.Subdomain); err != nil || domain != selected.Domain {
+			return Route{}, fmt.Errorf("%w: route %s is claimed with different hostnames", ErrConflict, id.String())
 		}
 		if claim.Expires.After(selected.ExpiresAt) {
 			selected.ExpiresAt = claim.Expires

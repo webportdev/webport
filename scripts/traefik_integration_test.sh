@@ -59,6 +59,11 @@ ping:
   entryPoint: ping
 EOF
 
+# webport embeds the web UI build; build it when this checkout has none.
+if [[ ! -f "$REPO_DIR/webui/dist/index.html" ]]; then
+	npm --prefix "$REPO_DIR/webui" ci
+	npm --prefix "$REPO_DIR/webui" run build
+fi
 GOCACHE=${GOCACHE:-/tmp/webport-go-cache} go build -o "$tmp/webport" "$REPO_DIR/cmd/webport"
 (
 	cd "$tmp/backend"

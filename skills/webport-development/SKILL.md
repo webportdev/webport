@@ -51,6 +51,15 @@ Use Webport for local development servers and configured development sessions.
   resolve the shadowing copy the upgrade reported.
 - `webport tui` is an interactive dashboard for people. Do not launch it from
   an agent; it takes over the terminal and does not exit on its own.
+- `webport webui status [--format json]` reports whether the daemon's optional
+  browser dashboard is enabled and published, with its URL and any route
+  error. `webport webui enable`, `disable`, and `subdomain NAME|--reset` change
+  it. Never pass a password as an argument; when the user asks you to set one,
+  use `webport webui password --stdin` with input they provide, and do not echo
+  it. Sessions appear in the dashboard only while connected to the daemon
+  socket; `webport doctor` reports the channel. Everything the dashboard does
+  has a CLI equivalent: `webport list`, `webport status`,
+  `webport dev status|env|logs|stop|restart`.
 
 ## Stop and restart
 

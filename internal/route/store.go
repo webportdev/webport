@@ -113,7 +113,7 @@ func (s *Store) DeleteExpired(now time.Time) []Route {
 
 	var expired []Route
 	for id, route := range s.routes {
-		if route.IsDiscovered() {
+		if route.IsDiscovered() || route.IsSystem() {
 			continue
 		}
 		if now.After(route.ExpiresAt) {

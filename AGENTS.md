@@ -31,6 +31,19 @@ For example, `myapp` plus `feature/auth` becomes
   and authenticated control sockets, plus daemon routes and publication status.
   Bubble Tea and Lip Gloss provide the terminal interface; wrappers publish
   separate instance metadata so concurrent wrappers can share a worktree.
+- The daemon optionally serves a password-protected browser dashboard with the
+  TUI's features (`webport webui` configures it). It listens on loopback and
+  publishes a daemon-owned system route on a configurable subdomain (default
+  `webport`). The React/Vite source lives in `webui/`; `webui/dist` is
+  embedded by the `webui` Go package; `internal/webui` holds the server,
+  settings, and manager.
+- Webport assumes one developer per machine. The daemon's Unix socket
+  (`internal/socket`) admits only `WEBPORT_OWNER_UID` and root, by kernel peer
+  credentials. Sessions keep a link to it (`state.Link`) and push non-secret
+  live state; the daemon's `internal/hub` relays inspect, logs, stop, and
+  restart to the session's existing control handler on demand and never
+  stores environment values or logs. `webport webui` commands use the same
+  socket.
 - `webportctl` registers a manual route, sends heartbeats, and unregisters it
   on shutdown. It can infer project and branch from Git.
 - `webport-dns` inspects or synchronizes persistent wildcard A/AAAA records for
@@ -40,7 +53,9 @@ For example, `myapp` plus `feature/auth` becomes
 - Linux uses systemd (`webport-stack.target`, `webport.service`, and
   `traefik.service`). macOS uses native LaunchDaemons.
 
-The service is intentionally stateless across restarts. Graceful shutdown stops
+Routes are intentionally stateless across restarts; only web UI settings
+persist, in `WEBPORT_STATE_DIR`. Sessions re-register over the socket after a
+daemon restart. Graceful shutdown stops
 discovery and certificate renewal, stops the TTL checker, clears the store,
 publishes a route-free Traefik configuration, and shuts down the HTTP server.
 
@@ -56,12 +71,17 @@ webport/
 │   ├── api/                     # REST handlers
 │   ├── config/                  # Daemon environment configuration
 │   ├── discovery/               # Linux/macOS legacy daemon discovery
+│   ├── hub/                     # Daemon registry of socket-connected sessions
 │   ├── devsession/              # Configured session runtime
 │   ├── dnsmanager/              # Provider-independent wildcard DNS logic
 │   ├── localca/                 # Private CA and wildcard leaf lifecycle
 │   ├── route/                   # Route types, domains, store, and TTL checker
 │   ├── shutdown/                # Signal-driven graceful cleanup
-│   └── traefik/                 # Dynamic YAML generation and atomic writer
+│   ├── socket/                  # Peer-authenticated daemon Unix socket
+│   ├── traefik/                 # Dynamic YAML generation and atomic writer
+│   ├── tui/                     # Terminal dashboard
+│   └── webui/                   # Browser dashboard server, settings, manager
+├── webui/                       # Vite/React/TypeScript source; embeds dist/
 ├── macos/                       # LaunchDaemon templates and runner scripts
 ├── scripts/                     # Installers, helpers, and integration tests
 ├── systemd/                     # Linux units and environment example
@@ -83,6 +103,11 @@ webport/
 | `GET` | `/health` | Return `OK` |
 | `GET` | `/ready` | Return publication readiness |
 | `GET` | `/status` | Return daemon publication and lease status |
+
+The daemon's own system routes (source `system`, such as the web UI's) may set
+a subdomain that replaces the generated hostname label; they never expire, and
+hostname collisions with other routes fail closed. Clients cannot set
+subdomains.
 
 The preferred lease API is `POST /v1/leases`,
 `POST /v1/leases/{lease_id}/heartbeat`, and
@@ -181,6 +206,10 @@ Never expose or trust `ca.key`; clients trust only `ca.crt`.
 | `WEBPORT_SHUTDOWN_TIMEOUT` | `5s` | HTTP shutdown timeout |
 | `WEBPORT_DISCOVERY_ENABLED` | `false` | Enable legacy daemon process discovery |
 | `WEBPORT_DISCOVERY_INTERVAL` | `2s` | Discovery reconciliation interval |
+| `WEBPORT_OWNER_UID` | unset | Developer UID admitted on the socket (plus root) |
+| `WEBPORT_SOCKET_PATH` | `/run/webport/webport.sock` | Session/CLI socket; macOS `/usr/local/var/webport/webport.sock` |
+| `WEBPORT_STATE_DIR` | `$STATE_DIRECTORY` or `/var/lib/webport` | Web UI settings; macOS `/usr/local/var/webport` |
+| `WEBPORT_WEBUI_LISTEN` | `127.0.0.1:0` | Web UI loopback listener |
 
 `webport-dns` additionally reads `WEBPORT_DNS_PROVIDER`,
 `WEBPORT_DNS_CREDENTIALS_FILE`, and optional `WEBPORT_DNS_ZONE`. Provider
@@ -194,6 +223,8 @@ must not be reintroduced.
 
 ```bash
 mise run all                    # Build all three host binaries
+mise run build-webui            # npm ci + build the embedded web UI
+mise run test-webui             # Web UI typecheck and unit tests
 mise run build                  # Build only webport
 mise run build-client           # Build webportctl
 mise run build-dns              # Build webport-dns
@@ -206,7 +237,8 @@ mise run installer-test         # Linux installer test suite
 mise run installer-test-macos   # macOS installer test suite
 ```
 
-Direct Go equivalents are acceptable, especially for a focused package:
+Direct Go equivalents are acceptable, especially for a focused package, once
+the web UI has been built (`mise run build-webui`):
 
 ```bash
 go test ./...
@@ -249,6 +281,17 @@ perform their own narrowly scoped elevation.
 - Runtime dependencies include go-systemd, libdns provider packages,
   `golang.org/x/sys`, YAML, and the Charm terminal UI libraries. Proxying is
   handled by the external official Traefik binary.
+- Never expose session control paths or tokens over the socket or to the
+  browser. Keep the session-side operation allowlist in `state.Link` aligned
+  with what the dashboard needs.
+- Web UI responses must never include control paths or tokens, password
+  hashes, or cleartext sensitive values except the explicit per-value copy
+  endpoint. Keep writes behind the same-origin header check and sessions
+  invalidated by password changes.
+- `webui/dist` is not committed. Run `mise run build-webui` before any direct
+  `go build`, `go test`, or `go vet` of packages that import `webui`;
+  otherwise `go:embed` fails with "pattern dist: no matching files found".
+  The `build`, `build-all`, `test`, `lint`, and `dev` mise tasks do this.
 - TUI output must treat project names, URLs, and environment as plain text,
   preserve selections across refresh, and never render control credentials.
   Stop/restart targets use captured session credentials, not raw PIDs.

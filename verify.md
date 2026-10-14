@@ -3,6 +3,7 @@
 ## Automated checks
 
 ```bash
+mise run build-webui
 GOCACHE=/tmp/webport-test-cache go test -race ./...
 GOCACHE=/tmp/webport-vet-cache go vet ./...
 

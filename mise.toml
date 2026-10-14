@@ -1,6 +1,7 @@
 [tools]
 gh = "latest"
 go="latest"
+node = "latest"
 
 [tasks.all]
 description = "Build webport, webportctl, and webport-dns"
@@ -39,9 +40,40 @@ run = "./scripts/install_test.sh"
 description = "Run macOS installer tests"
 run = "./scripts/install_macos_test.sh"
 
-[tasks.build]
-description = "Build the webport server"
+[tasks.build-webui]
+description = "Install dependencies and build the embedded web UI"
+dir = "webui"
 run = """
+npm ci
+npm run build
+"""
+
+[tasks.test-webui]
+description = "Typecheck and unit test the web UI"
+dir = "webui"
+run = """
+npm ci
+npm run typecheck
+npm test
+"""
+
+[tasks.dev-webui]
+description = "Run the web UI with hot reload against the daemon from mise run dev"
+dir = "webui"
+run = """
+echo "Start the daemon in another terminal with: mise run dev"
+echo "Then enable the UI: WEBPORT_SOCKET_PATH=\"$(cd .. && mise run --quiet dev-socket)\" webport webui enable"
+npm run dev
+"""
+
+[tasks.dev-socket]
+description = "Print the socket path used by mise run dev"
+run = 'printf "%s\\n" "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/webport-dev.sock"'
+
+[tasks.build]
+description = "Build the web UI, then the webport server that embeds it"
+run = """
+mise run build-webui
 GO="${GO:-go}"
 echo "Building webport..."
 mkdir -p build
@@ -112,12 +144,13 @@ fi
 description = "Remove build artifacts"
 run = """
 echo "Cleaning build artifacts..."
-rm -rf build
+rm -rf build webui/dist
 """
 
 [tasks.test]
 description = "Run Go tests"
 run = """
+mise run build-webui
 GO="${GO:-go}"
 echo "Running tests..."
 "$GO" test -v ./...
@@ -193,11 +226,15 @@ echo "Uninstalled webport and webportctl"
 [tasks.dev]
 description = "Run webport in development mode without modifying system Traefik"
 run = """
+mise run build-webui
 GO="${GO:-go}"
 echo "Running in development mode..."
 WEBPORT_BASE_DOMAIN=example.com \
 WEBPORT_PORT="${WEBPORT_PORT:-8080}" \
 WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH=/tmp/webport-traefik.yml \
+WEBPORT_SOCKET_PATH="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/webport-dev.sock" \
+WEBPORT_STATE_DIR=/tmp/webport-dev-state \
+WEBPORT_WEBUI_LISTEN=127.0.0.1:7357 \
 "$GO" run ./cmd/webport
 """
 
@@ -211,6 +248,7 @@ GO="${GO:-go}"
 [tasks.lint]
 description = "Run Go vet"
 run = """
+mise run build-webui
 GO="${GO:-go}"
 "$GO" vet ./...
 """
@@ -218,6 +256,7 @@ GO="${GO:-go}"
 [tasks.build-all]
 description = "Build release binaries for Linux and macOS"
 run = """
+mise run build-webui
 GO="${GO:-go}"
 echo "Building for multiple platforms..."
 mkdir -p build

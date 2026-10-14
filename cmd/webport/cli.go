@@ -30,6 +30,7 @@ import (
 	devsession "github.com/webportdev/webport/internal/devsession/session"
 	"github.com/webportdev/webport/internal/discovery"
 	"github.com/webportdev/webport/internal/route"
+	"github.com/webportdev/webport/internal/socket"
 )
 
 const defaultAPI = "http://127.0.0.1:8080"
@@ -62,6 +63,7 @@ Usage:
   webport dev [options] -- COMMAND [ARG...]
   webport route --port PORT [options]
   webport tui [--api URL]
+  webport webui status|enable|disable|password|subdomain [options]
   webport inspect [--config PATH] [--format json] [options]
   webport list
   webport status
@@ -78,6 +80,8 @@ foreground session. Use "webport dev status" or "webport dev logs --follow"
 from another terminal while it runs.
 Run "webport tui" to browse instances, services, URLs, and environment,
 and manage active instances with visible hotkeys.
+Run "webport webui enable" to serve the same dashboard in a browser at
+https://webport.BASE_DOMAIN behind a password ("webport webui password").
 Use "webport inspect" to see active URLs and environment for this project.
 Use "webport inspect --config PATH" for another active configured project.
 Use "webport dev config --include-inherited" or
@@ -847,6 +851,7 @@ func runDoctorTo(out io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(out, "PASS daemon API is ready")
+	checkSessionChannel(out)
 
 	var cfg struct {
 		BaseDomain string `json:"base_domain"`
@@ -882,6 +887,22 @@ func runDoctorTo(out io.Writer) error {
 	}
 	fmt.Fprintf(out, "PASS wildcard name resolution for %s\n", serverName)
 	return nil
+}
+
+// checkSessionChannel reports whether this user can reach the daemon socket.
+// Routing works without it, so a failure is a warning.
+func checkSessionChannel(out io.Writer) {
+	path := socket.DefaultPath()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var status struct {
+		ConnectedSessions int `json:"connected_sessions"`
+	}
+	if err := socket.Call(ctx, path, "daemon.status", nil, &status); err != nil {
+		fmt.Fprintf(out, "WARN session channel: %v; the web UI cannot show this user's sessions\n", err)
+		return
+	}
+	fmt.Fprintf(out, "PASS session channel %s (%d connected sessions)\n", path, status.ConnectedSessions)
 }
 
 func runCompatibilityCommand(name string, args []string) error {

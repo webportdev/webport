@@ -6,9 +6,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/webportdev/webport/internal/socket"
 )
 
 const (
@@ -44,6 +47,26 @@ type Config struct {
 	DiscoveryEnabled bool
 	// Process discovery reconciliation interval.
 	DiscoveryInterval time.Duration
+	// SocketPath is the authenticated Unix socket for sessions and the CLI.
+	SocketPath string
+	// OwnerUID is the developer's UID admitted on the socket, or -1 to admit
+	// only root and the daemon's own user.
+	OwnerUID int
+	// StateDir holds the daemon's persistent settings, such as the web UI's.
+	StateDir string
+	// WebUIListen is the loopback address the web UI serves Traefik on.
+	WebUIListen string
+}
+
+// defaultStateDir uses systemd's StateDirectory when present.
+func defaultStateDir() string {
+	if value := os.Getenv("STATE_DIRECTORY"); value != "" && !strings.Contains(value, ":") {
+		return value
+	}
+	if runtime.GOOS == "darwin" {
+		return "/usr/local/var/webport"
+	}
+	return "/var/lib/webport"
 }
 
 // Load reads and strictly validates configuration from environment variables.
@@ -55,6 +78,7 @@ func Load() (*Config, error) {
 	shutdownTimeout, shutdownErr := getEnvDuration("WEBPORT_SHUTDOWN_TIMEOUT", 5*time.Second)
 	discoveryEnabled, discoveryErr := getEnvBool("WEBPORT_DISCOVERY_ENABLED", false)
 	discoveryInterval, discoveryIntervalErr := getEnvDuration("WEBPORT_DISCOVERY_INTERVAL", 2*time.Second)
+	ownerUID, ownerErr := getEnvInt("WEBPORT_OWNER_UID", -1)
 	cfg := &Config{
 		TraefikDynamicConfigPath: dynamicConfigPath,
 		TraefikEntryPoint:        getEnv("WEBPORT_TRAEFIK_ENTRYPOINT", "websecure"),
@@ -69,10 +93,14 @@ func Load() (*Config, error) {
 		ShutdownTimeout:          shutdownTimeout,
 		DiscoveryEnabled:         discoveryEnabled,
 		DiscoveryInterval:        discoveryInterval,
+		SocketPath:               socket.DefaultPath(),
+		OwnerUID:                 ownerUID,
+		StateDir:                 getEnv("WEBPORT_STATE_DIR", defaultStateDir()),
+		WebUIListen:              getEnv("WEBPORT_WEBUI_LISTEN", "127.0.0.1:0"),
 	}
 
 	var errs []error
-	errs = appendError(errs, portErr, ttlErr, checkErr, shutdownErr, discoveryErr, discoveryIntervalErr)
+	errs = appendError(errs, portErr, ttlErr, checkErr, shutdownErr, discoveryErr, discoveryIntervalErr, ownerErr)
 	if cfg.BaseDomain == "" {
 		errs = append(errs, errors.New("WEBPORT_BASE_DOMAIN is required"))
 	} else if err := validateDomain(cfg.BaseDomain); err != nil {
@@ -95,6 +123,18 @@ func Load() (*Config, error) {
 	}
 	if cfg.DiscoveryInterval <= 0 {
 		errs = append(errs, errors.New("WEBPORT_DISCOVERY_INTERVAL must be positive"))
+	}
+	if cfg.OwnerUID < -1 {
+		errs = append(errs, errors.New("WEBPORT_OWNER_UID must be a non-negative UID"))
+	}
+	if !filepath.IsAbs(cfg.SocketPath) {
+		errs = append(errs, errors.New("WEBPORT_SOCKET_PATH must be an absolute path"))
+	}
+	if !filepath.IsAbs(cfg.StateDir) {
+		errs = append(errs, errors.New("WEBPORT_STATE_DIR must be an absolute path"))
+	}
+	if err := validateLoopback(cfg.WebUIListen); err != nil {
+		errs = append(errs, fmt.Errorf("WEBPORT_WEBUI_LISTEN: %w", err))
 	}
 	if cfg.TraefikDynamicConfigPath == "" {
 		errs = append(errs, errors.New("WEBPORT_TRAEFIK_DYNAMIC_CONFIG_PATH must not be empty"))
@@ -180,6 +220,25 @@ func validateDomain(value string) error {
 				return errors.New("must contain only DNS letters, digits, dots, and dashes")
 			}
 		}
+	}
+	return nil
+}
+
+// validateLoopback requires HOST:PORT on a loopback host so the web UI is
+// only reachable through Traefik or from this machine.
+func validateLoopback(value string) error {
+	host, port, err := net.SplitHostPort(value)
+	if err != nil {
+		return errors.New("must be HOST:PORT")
+	}
+	if number, err := strconv.Atoi(port); err != nil || number < 0 || number > 65535 {
+		return errors.New("port must be between 0 and 65535")
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return errors.New("host must be a loopback address")
 	}
 	return nil
 }

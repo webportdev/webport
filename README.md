@@ -158,6 +158,51 @@ support. Start them again with the updated binary to enable management. Manual
 and legacy discovered routes are visible in Routes; they do not expose process
 control or service environments.
 
+## Web dashboard
+
+The daemon can serve the same dashboard in a browser: instances, routes,
+daemon status, and each instance's services, URLs, environment, and logs, plus
+stop and restart. It is optional, disabled by default, and always
+password-protected.
+
+```bash
+webport webui password            # prompt for a password (or: --stdin)
+webport webui enable              # serve it now and after daemon restarts
+webport webui status              # URL, listener, and route state
+webport webui subdomain dash      # publish at https://dash.BASE_DOMAIN
+webport webui subdomain --reset   # back to the default, webport
+webport webui disable
+```
+
+The dashboard is published at `https://webport.BASE_DOMAIN` by default, for
+example `https://webport.webport.localhost` with the local-first install. The
+daemon serves it on a loopback port behind a daemon-owned route. A subdomain
+that collides with another route fails closed: the daemon keeps retrying and
+`webport webui status` shows the error.
+
+Webport assumes one developer per machine. Development sessions connect to
+the daemon's Unix socket (`/run/webport/webport.sock` on Linux,
+`/usr/local/var/webport/webport.sock` on macOS) and keep that connection open.
+The kernel reports each connection's user, and the daemon admits only
+`WEBPORT_OWNER_UID`, which the installer sets to the installing user, plus
+root. Sessions send their non-secret state (services, URLs, ports, log paths)
+when it changes. Environment values and logs stay in the session: the daemon
+asks for them only while a page shows them, and does not store them. A session
+leaves the dashboard as soon as it exits. Sessions started by older binaries do
+not connect; restart them with the upgraded `webport`. `webport doctor` checks
+the channel.
+
+Settings are stored in the daemon's state directory (`/var/lib/webport` or
+`/usr/local/var/webport`, mode `0600`). The file holds only a salted
+PBKDF2-SHA256 password hash; `webport webui password` hashes the password
+before sending it to the daemon. A password change signs out every browser.
+Sign-in cookies are `HttpOnly` and `SameSite=Strict`, and expire after 24
+hours idle or 7 days. Repeated failed sign-ins are delayed, writes require a
+same-origin request header, and responses use a strict Content Security
+Policy. Sensitive environment values stay hidden until revealed; copying
+fetches the real value without showing it. Press `?` in the dashboard for
+keyboard shortcuts that mirror the terminal dashboard.
+
 ## Commands
 
 ```text
@@ -168,6 +213,8 @@ webport dev [options] -- COMMAND [ARG...]    Run and publish a dev server
 webport route --port PORT [options]          Publish an already-running server
 webport inspect [--config PATH] [options]    Show active URLs and project environment
 webport tui [--api URL]                       Manage instances and browse URLs/environment/logs
+webport webui status|enable|disable|password|subdomain
+                                             Browser dashboard (see Web dashboard)
 webport list                                 List active routes
 webport status                               Show daemon/publication state
 webport doctor                               Test API, TLS, trust, and DNS
@@ -430,6 +477,10 @@ The installer manages these environment values:
 | `WEBPORT_SHUTDOWN_TIMEOUT` | `5s` | HTTP shutdown timeout |
 | `WEBPORT_DISCOVERY_ENABLED` | `false` | Deprecated privileged discovery |
 | `WEBPORT_DISCOVERY_INTERVAL` | `2s` | Legacy discovery reconciliation interval |
+| `WEBPORT_OWNER_UID` | unset (root and the daemon user only) | Developer UID admitted on the session socket |
+| `WEBPORT_SOCKET_PATH` | `/run/webport/webport.sock` (macOS: `/usr/local/var/webport/webport.sock`) | Session and CLI socket; clients read it too |
+| `WEBPORT_STATE_DIR` | systemd `StateDirectory`, else `/var/lib/webport` (macOS: `/usr/local/var/webport`) | Persistent web UI settings |
+| `WEBPORT_WEBUI_LISTEN` | `127.0.0.1:0` | Loopback address Traefik forwards the web UI to |
 
 Invalid booleans, durations, ports, domains, or TLS combinations prevent
 startup with explicit errors; malformed values are not silently replaced.
@@ -487,7 +538,15 @@ mise run installer-test-macos
 mise run dev
 ```
 
-Focused tests are also supported:
+For web UI work, run `mise run dev` (a development daemon whose UI listens on
+`127.0.0.1:7357`) and `mise run dev-webui` (Vite hot reload). Point
+`webport webui` and sessions at that daemon with
+`WEBPORT_SOCKET_PATH=$(mise run --quiet dev-socket)`.
+
+`webport` embeds the web UI from `webui/dist`, which is not committed.
+`mise run build`, `build-all`, `test`, `lint`, and `dev` build the frontend
+first; before running Go commands directly, run `mise run build-webui` once
+(it needs Node and npm). Focused tests are also supported:
 
 ```bash
 go test ./internal/route

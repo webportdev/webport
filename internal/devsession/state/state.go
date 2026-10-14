@@ -33,6 +33,7 @@ type Store struct {
 	LogRoot      string
 	lock         *fileLock
 	mu           sync.Mutex
+	link         *Link
 }
 
 type LiveState struct {
@@ -177,7 +178,18 @@ func (s *Store) WriteLive(value LiveState) error {
 		return errors.New("session state is not locked")
 	}
 	value.SchemaVersion = 1
-	return writeJSONAtomic(s.LivePath, value)
+	if err := writeJSONAtomic(s.LivePath, value); err != nil {
+		return err
+	}
+	s.link.Publish(value)
+	return nil
+}
+
+// SetLink publishes every subsequent live state through link.
+func (s *Store) SetLink(link *Link) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.link = link
 }
 
 func (s *Store) RemoveLive() error {
@@ -272,6 +284,7 @@ type ControlServer struct {
 	listener net.Listener
 	handler  Handler
 	done     chan struct{}
+	link     *Link
 }
 
 func StartControl(path string, handler Handler) (*ControlServer, error) {
@@ -302,10 +315,18 @@ func StartControl(path string, handler Handler) (*ControlServer, error) {
 	return server, nil
 }
 
-func (s *ControlServer) Path() string  { return s.path }
+func (s *ControlServer) Path() string { return s.path }
+
+// StartLink registers this session with the daemon socket and publishes
+// store's live state through it. Close disconnects it.
+func (s *ControlServer) StartLink(store *Store) {
+	s.link = StartLink("", s.handler)
+	store.SetLink(s.link)
+}
 func (s *ControlServer) Token() string { return s.token }
 
 func (s *ControlServer) Close() error {
+	s.link.Close()
 	if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		return err
 	}

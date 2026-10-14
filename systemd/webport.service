@@ -21,6 +21,11 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/etc/traefik/dynamic
+# /run/webport holds the session socket; /var/lib/webport holds web UI settings.
+RuntimeDirectory=webport
+RuntimeDirectoryMode=0755
+StateDirectory=webport
+StateDirectoryMode=0700
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=webport

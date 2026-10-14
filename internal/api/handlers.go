@@ -244,17 +244,22 @@ func (h *Handlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	resp := h.Status()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("ERROR: failed to encode status response: %v", err)
+	}
+}
+
+// Status reports daemon publication and lease state.
+func (h *Handlers) Status() StatusResponse {
 	status := h.control.Status()
-	resp := StatusResponse{
+	return StatusResponse{
 		Version: buildVersion(), UptimeSeconds: int64(time.Since(h.started).Seconds()),
 		TLSMode: h.cfg.TLSMode, RouteCount: h.store.Count(), LeaseCount: status.LeaseCount,
 		Revision: status.Revision, AppliedRevision: status.AppliedRevision,
 		LastPublished: status.LastPublished, LastError: status.LastError,
 		Ready: h.control.Ready(),
-	}
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("ERROR: failed to encode status response: %v", err)
 	}
 }
 

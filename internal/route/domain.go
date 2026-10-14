@@ -30,3 +30,16 @@ func BuildDomainChecked(baseDomain, project, branch string) (string, error) {
 	}
 	return domain, nil
 }
+
+// BuildRouteDomain returns the hostname for a route, using subdomain as the
+// complete hostname label when it is set.
+func BuildRouteDomain(baseDomain, project, branch, subdomain string) (string, error) {
+	if subdomain == "" {
+		return BuildDomainChecked(baseDomain, project, branch)
+	}
+	domain := strings.ToLower(subdomain) + "." + strings.ToLower(strings.Trim(baseDomain, "."))
+	if len(domain) > 253 {
+		return "", fmt.Errorf("generated hostname is %d characters; maximum is 253", len(domain))
+	}
+	return domain, nil
+}

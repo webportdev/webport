@@ -58,3 +58,6 @@ final_verify_watchdog.sh
 
 # Context/documentation files not for version control
 webport-context.md
+
+# Web UI dependencies (build output is covered by dist/ above)
+webui/node_modules/

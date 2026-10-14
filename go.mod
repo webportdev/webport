@@ -2,6 +2,9 @@ module github.com/webportdev/webport
 
 go 1.25.7
 
+// The web UI's npm dependencies are not Go packages.
+ignore ./webui/node_modules
+
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0

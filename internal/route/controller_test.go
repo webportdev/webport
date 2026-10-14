@@ -117,3 +117,59 @@ func TestControllerExpiresUncleanLease(t *testing.T) {
 		t.Fatalf("expired = %d, routes = %d", count, store.Count())
 	}
 }
+
+func TestControllerSubdomainLeases(t *testing.T) {
+	store := NewStore()
+	controller := NewController(store, func() error { return nil })
+	now := time.Now()
+	req := RegisterRequest{Project: "webport", Branch: "webui", Port: 7000, Subdomain: "webport"}
+	_, registered, _, err := controller.CreateLease("ui", req, "example.com", now, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registered.Domain != "webport.example.com" {
+		t.Fatalf("domain = %q, want webport.example.com", registered.Domain)
+	}
+	stored, ok := store.Get(RouteID{Project: "webport", Branch: "webui"})
+	if !ok || stored.Domain != "webport.example.com" {
+		t.Fatalf("stored route = %#v", stored)
+	}
+
+	// A generated hostname cannot take over an explicit subdomain.
+	_, _, _, err = controller.CreateLease("app", RegisterRequest{Project: "app", Branch: "main", Port: 3000, Subdomain: "webport"}, "example.com", now, 30*time.Second)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("subdomain collision error = %v, want ErrConflict", err)
+	}
+	_, _, _, err = controller.CreateLease("generated", RegisterRequest{Project: "app", Branch: "main", Port: 3000, Subdomain: "webport-ui"}, "example.com", now, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err = controller.CreateLease("collide", RegisterRequest{Project: "webport", Branch: "ui", Port: 3001}, "example.com", now, 30*time.Second)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("generated hostname collision error = %v, want ErrConflict", err)
+	}
+
+	// The same identity cannot be claimed under two hostnames.
+	_, _, _, err = controller.CreateLease("ui-two", RegisterRequest{Project: "webport", Branch: "webui", Port: 7000, Subdomain: "dashboard"}, "example.com", now, 30*time.Second)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("identity hostname conflict error = %v, want ErrConflict", err)
+	}
+	// A client cannot silently change its lease's hostname.
+	_, _, _, err = controller.CreateLease("ui", RegisterRequest{Project: "webport", Branch: "webui", Port: 7000, Subdomain: "dashboard"}, "example.com", now, 30*time.Second)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("client hostname change error = %v, want ErrConflict", err)
+	}
+}
+
+func TestRegisterRequestValidatesSubdomain(t *testing.T) {
+	for _, value := range []string{"Webport", "-webport", "web.port", "web_port", "webport-"} {
+		req := RegisterRequest{Project: "webport", Branch: "webui", Port: 7000, Subdomain: value}
+		if err := req.Validate(); err == nil {
+			t.Errorf("subdomain %q was accepted", value)
+		}
+	}
+	req := RegisterRequest{Project: "webport", Branch: "webui", Port: 7000, Subdomain: "web-port2"}
+	if err := req.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
