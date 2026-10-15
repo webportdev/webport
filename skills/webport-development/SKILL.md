@@ -41,6 +41,11 @@ Use Webport for local development servers and configured development sessions.
 - Use `webport dev status` for live or retained session state,
   `webport dev logs SERVICE` for logs, and `webport dev env` for shell-ready
   environment output. Use `webport dev config` to preview an inactive session.
+- Services in `.webport.yaml` may set an optional `description` string. It is
+  literal public display text, without interpolation; keep secrets out of it.
+  Read descriptions with `webport dev config` or, for an active session,
+  `webport dev status --format json` under `services.SERVICE.description`.
+  Empty descriptions are hidden. Restart the session to apply description edits.
 - Use `webport status`, `webport config`, and `webport doctor` for daemon and
   route problems.
 - If a route is missing, first check that the client or session is still

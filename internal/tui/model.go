@@ -625,7 +625,11 @@ func (m Model) rows() []row {
 		live, _ := m.instance()
 		for _, name := range m.services() {
 			s := live.Services[name]
-			rows = append(rows, row{name, fmt.Sprintf("%s  ·  %s  ·  PID %d", name, s.State, s.PID) + "  " + s.LastError, ""})
+			label := fmt.Sprintf("%s  ·  %s  ·  PID %d", name, s.State, s.PID)
+			if s.Description != "" {
+				label += "  ·  " + s.Description
+			}
+			rows = append(rows, row{name, label + "  " + s.LastError, ""})
 		}
 	case urlsPage:
 		live, _ := m.instance()

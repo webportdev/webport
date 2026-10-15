@@ -223,7 +223,7 @@ func runOnce(ctx context.Context, options Options, restart *atomic.Bool) (runErr
 		PIDs: []state.ProcessIdentity{state.IdentifyProcess(os.Getpid())},
 	}
 	for _, name := range resolvedPlan.Order {
-		live.Services[name] = state.ServiceState{State: string(supervisor.StatePending)}
+		live.Services[name] = state.ServiceState{Description: resolvedPlan.Services[name].Description, State: string(supervisor.StatePending)}
 		for label, endpoint := range resolvedPlan.Services[name].Endpoints {
 			live.Endpoints[name+"."+label] = endpoint
 		}

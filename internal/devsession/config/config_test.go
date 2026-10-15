@@ -21,6 +21,7 @@ env:
   REPLACE: primary
 services:
   app:
+    description: Primary application
     command: [go, run, ./app]
     env: {A: one}
 profiles:
@@ -31,6 +32,7 @@ profiles:
   REPLACE: local
 services:
   app:
+    description: Local application
     env: {B: two}
 `)
 
@@ -47,8 +49,44 @@ services:
 	if got.Services["app"].Env["A"].Literal == nil || got.Services["app"].Env["B"].Literal == nil {
 		t.Fatalf("recursive service merge = %+v", got.Services["app"].Env)
 	}
+	if got.Services["app"].Description != "Local application" {
+		t.Fatalf("merged description = %q", got.Services["app"].Description)
+	}
 	if got.Session.RetainLastSummary == nil || !*got.Session.RetainLastSummary {
 		t.Fatal("default retain_last_summary = false")
+	}
+}
+
+func TestLoadServiceDescription(t *testing.T) {
+	for _, test := range []struct {
+		name, field, want string
+		invalid           bool
+	}{
+		{name: "omitted"},
+		{name: "empty", field: `description: ""`},
+		{name: "literal", field: `description: "API for ${project}"`, want: "API for ${project}"},
+		{name: "multiline", field: "description: |\n      First line\n      Second line", want: "First line\nSecond line\n"},
+		{name: "number", field: "description: 42", invalid: true},
+		{name: "null", field: "description: null", invalid: true},
+		{name: "sequence", field: "description: [API]", invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), ".webport.yaml")
+			writeConfig(t, path, "version: 1\nservices:\n  api:\n    command: [go]\n    "+test.field+"\n")
+			got, err := LoadFrom(path)
+			if test.invalid {
+				if err == nil || !strings.Contains(err.Error(), "services.api.description") {
+					t.Fatalf("invalid description error = %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Services["api"].Description != test.want {
+				t.Fatalf("description = %q, want %q", got.Services["api"].Description, test.want)
+			}
+		})
 	}
 }
 

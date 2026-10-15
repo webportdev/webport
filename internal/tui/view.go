@@ -175,7 +175,11 @@ func (m Model) rowLabel(r row, width int) string {
 			status = badStyle.Render("● " + clean(s.State))
 		}
 		nameWidth := max(8, width-ansi.StringWidth(status)-3)
-		return pad(plain(r.id, nameWidth), nameWidth) + "  " + status
+		label := r.id
+		if s.Description != "" {
+			label += " · " + s.Description
+		}
+		return pad(plain(label, nameWidth), nameWidth) + "  " + status
 	}
 	if m.page == routesPage || m.page == urlsPage {
 		label := clean(r.label)
@@ -281,6 +285,9 @@ func (m Model) detailLines(width int) []string {
 	case servicesPage:
 		s := live.Services[r.id]
 		add("SERVICE", r.id)
+		if s.Description != "" {
+			add("DESCRIPTION", s.Description)
+		}
 		add("STATE", s.State)
 		add("PROCESS", fmt.Sprintf("PID %d", s.PID))
 		if value := instanceURL(live, r.id); value != "" {

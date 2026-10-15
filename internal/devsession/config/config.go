@@ -97,18 +97,19 @@ type Generate struct {
 }
 
 type Service struct {
-	Command    []string          `yaml:"command"`
-	Shell      string            `yaml:"shell"`
-	WorkingDir string            `yaml:"working_dir"`
-	Env        map[string]Value  `yaml:"env"`
-	DependsOn  []string          `yaml:"depends_on"`
-	Completion string            `yaml:"completion"`
-	Ready      *Ready            `yaml:"ready"`
-	Endpoints  map[string]string `yaml:"endpoints"`
-	Logs       *Logs             `yaml:"logs"`
-	Shutdown   *Shutdown         `yaml:"shutdown"`
-	Route      *Route            `yaml:"route"`
-	Platform   []string          `yaml:"platform"`
+	Description string            `yaml:"description"`
+	Command     []string          `yaml:"command"`
+	Shell       string            `yaml:"shell"`
+	WorkingDir  string            `yaml:"working_dir"`
+	Env         map[string]Value  `yaml:"env"`
+	DependsOn   []string          `yaml:"depends_on"`
+	Completion  string            `yaml:"completion"`
+	Ready       *Ready            `yaml:"ready"`
+	Endpoints   map[string]string `yaml:"endpoints"`
+	Logs        *Logs             `yaml:"logs"`
+	Shutdown    *Shutdown         `yaml:"shutdown"`
+	Route       *Route            `yaml:"route"`
+	Platform    []string          `yaml:"platform"`
 }
 
 type Ready struct {
@@ -417,6 +418,7 @@ func validateServices(node *yaml.Node, path string) error {
 
 func validateService(node *yaml.Node, path string) error {
 	return validateMapping(node, currentFile(node), path, map[string]func(*yaml.Node, string) error{
+		"description": scalarType(yaml.ScalarNode, "string"),
 		"command":     sequenceOf("string"),
 		"shell":       scalarType(yaml.ScalarNode, "string"),
 		"working_dir": scalarType(yaml.ScalarNode, "string"),

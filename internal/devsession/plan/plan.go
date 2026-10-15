@@ -91,18 +91,19 @@ type BuildOptions struct {
 }
 
 type Service struct {
-	Name       string
-	Command    []string
-	Shell      string
-	WorkingDir string
-	Env        map[string]config.Value
-	DependsOn  []string
-	Completion string
-	Ready      *config.Ready
-	Endpoints  map[string]string
-	Logs       *config.Logs
-	Shutdown   *config.Shutdown
-	Route      *config.Route
+	Name        string
+	Description string
+	Command     []string
+	Shell       string
+	WorkingDir  string
+	Env         map[string]config.Value
+	DependsOn   []string
+	Completion  string
+	Ready       *config.Ready
+	Endpoints   map[string]string
+	Logs        *config.Logs
+	Shutdown    *config.Shutdown
+	Route       *config.Route
 }
 
 type Plan struct {
@@ -163,7 +164,7 @@ func Build(cfg config.Config, id identity.Identity, options BuildOptions) (Plan,
 			return Plan{}, fmt.Errorf("service %q working_dir %q is not a directory", name, workingDir)
 		}
 		services[name] = Service{
-			Name: name, Command: append([]string(nil), item.Command...), Shell: item.Shell,
+			Name: name, Description: item.Description, Command: append([]string(nil), item.Command...), Shell: item.Shell,
 			WorkingDir: workingDir, Env: copyValues(item.Env), DependsOn: append([]string(nil), item.DependsOn...),
 			Completion: completion(item), Ready: item.Ready, Endpoints: copyStrings(item.Endpoints),
 			Logs: effectiveLogs(item.Logs), Shutdown: item.Shutdown, Route: item.Route,
@@ -227,6 +228,9 @@ func (p Plan) Human(showSensitive ...bool) string {
 	for index, name := range p.Order {
 		service := p.Services[name]
 		fmt.Fprintf(&builder, "  %d. %s (%s)", index+1, name, service.Completion)
+		if service.Description != "" {
+			fmt.Fprintf(&builder, " description=%q", service.Description)
+		}
 		if len(service.Command) > 0 {
 			fmt.Fprintf(&builder, " [%s]", strings.Join(service.Command, " "))
 		} else {
@@ -301,6 +305,7 @@ type redactedPlan struct {
 }
 
 type redactedService struct {
+	Description string            `json:"description,omitempty"`
 	Command     []string          `json:"command,omitempty"`
 	Shell       string            `json:"shell,omitempty"`
 	WorkingDir  string            `json:"working_dir"`
@@ -396,7 +401,7 @@ func (p Plan) redacted() redactedPlan {
 	services := make(map[string]redactedService, len(p.Services))
 	for name, service := range p.Services {
 		services[name] = redactedService{
-			Command: append([]string(nil), service.Command...), Shell: service.Shell,
+			Description: service.Description, Command: append([]string(nil), service.Command...), Shell: service.Shell,
 			WorkingDir: service.WorkingDir, DependsOn: append([]string(nil), service.DependsOn...),
 			Completion: service.Completion, Environment: redactedValues(service.Env),
 			Ready: readyView(service.Ready), Endpoints: copyStrings(service.Endpoints), Logs: logsView(service.Logs),

@@ -55,12 +55,13 @@ type LiveState struct {
 }
 
 type ServiceState struct {
-	State     string    `json:"state"`
-	PID       int       `json:"pid,omitempty"`
-	Ready     bool      `json:"ready"`
-	StartedAt time.Time `json:"started_at,omitempty"`
-	EndedAt   time.Time `json:"ended_at,omitempty"`
-	LastError string    `json:"last_error,omitempty"`
+	Description string    `json:"description,omitempty"`
+	State       string    `json:"state"`
+	PID         int       `json:"pid,omitempty"`
+	Ready       bool      `json:"ready"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+	EndedAt     time.Time `json:"ended_at,omitempty"`
+	LastError   string    `json:"last_error,omitempty"`
 }
 
 type RouteState struct {

@@ -46,6 +46,44 @@ func TestBuildSelectsClosureAndDeterministicDependencyOrder(t *testing.T) {
 	}
 }
 
+func TestBuildPreservesOptionalServiceDescriptionsInOutput(t *testing.T) {
+	dir := t.TempDir()
+	description := "API for ${project}\nServes HTTP"
+	cfg := config.Config{
+		Profiles: map[string]config.Profile{"default": {Services: []string{"api", "worker"}}},
+		Services: map[string]config.Service{
+			"api":    {Description: description, Command: []string{"api"}},
+			"worker": {Command: []string{"worker"}},
+		},
+	}
+	got, err := Build(cfg, identity.Identity{ConfigDirectory: dir, WorktreeRoot: dir}, BuildOptions{Lookup: lookupFake{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Services["api"].Description != description {
+		t.Fatalf("description = %q", got.Services["api"].Description)
+	}
+	encoded, err := got.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Services map[string]map[string]any `json:"services"`
+	}
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.Services["api"]["description"] != description {
+		t.Fatalf("JSON description = %v", document.Services["api"]["description"])
+	}
+	if _, ok := document.Services["worker"]["description"]; ok {
+		t.Fatalf("JSON contains an unset description: %s", encoded)
+	}
+	if !strings.Contains(got.Human(), `description="API for ${project}\nServes HTTP"`) {
+		t.Fatalf("human plan omitted description: %s", got.Human())
+	}
+}
+
 func TestBuildCycleSelectionAndAggregateMissingCommands(t *testing.T) {
 	dir := t.TempDir()
 	base := func(services map[string]config.Service) config.Config {

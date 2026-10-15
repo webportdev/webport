@@ -74,7 +74,7 @@ func newHarness(t *testing.T) *harness {
 	live := state.LiveState{
 		SessionID: "session-1", Worktree: "/src/app", Profile: "default",
 		ControlPath: "/run/user/1/webport/x.sock", ControlToken: "super-secret-token",
-		Services: map[string]state.ServiceState{"web": {State: "running", Ready: true, PID: 42}},
+		Services: map[string]state.ServiceState{"web": {Description: "Application frontend", State: "running", Ready: true, PID: 42}},
 		Routes:   map[string]state.RouteState{"web": {State: "active", Project: "app", Branch: "main", URL: "https://app-main.example.com"}},
 	}
 	h := &harness{t: t, backend: &fakeBackend{instances: []state.LiveState{live}}, settings: Settings{Enabled: true, PasswordHash: hash}, now: time.Unix(1_700_000_000, 0)}
@@ -162,6 +162,9 @@ func TestLoginAndSnapshotOmitControlCredentials(t *testing.T) {
 	}
 	if len(snapshot.Instances) != 1 || snapshot.Instances[0].Name != "app:main" || snapshot.Instances[0].URL != "https://app-main.example.com" {
 		t.Fatalf("instances = %#v", snapshot.Instances)
+	}
+	if got := snapshot.Instances[0].Services["web"].Description; got != "Application frontend" {
+		t.Fatalf("snapshot description = %q", got)
 	}
 	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Content-Security-Policy") == "" {
 		t.Fatalf("missing security headers: %v", response.Header())

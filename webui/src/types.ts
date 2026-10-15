@@ -1,4 +1,5 @@
 export interface ServiceState {
+  description?: string;
   state: string;
   pid?: number;
   ready: boolean;

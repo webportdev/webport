@@ -250,17 +250,20 @@ export function serviceRows(instance: Instance, actions: RowActions): Row[] {
     const logPath = instance.log_paths?.[name];
     return {
       id: name,
-      search: `${name} ${service.state} ${service.pid ?? ""} ${service.last_error ?? ""}`,
+      search: `${name} ${service.description ?? ""} ${service.state} ${service.pid ?? ""} ${service.last_error ?? ""}`,
       url,
       activate: () => actions.openService(name),
       copy: url ? () => actions.copyURL(url) : undefined,
-      expand: { title: name, text: [name, service.state, url, service.last_error].filter(Boolean).join("\n"), url },
+      expand: { title: name, text: [name, service.description, service.state, url, service.last_error].filter(Boolean).join("\n"), url },
       primary: (
         <div className="row-main">
           <div className="row-title">
             <span className="truncate">{name}</span>
           </div>
-          <div className="row-sub truncate">{service.pid ? `PID ${service.pid}` : "No process"}{service.last_error ? ` · ${service.last_error}` : ""}</div>
+          <div className="row-sub">
+            {service.description && <div className="truncate">{service.description}</div>}
+            <div className="truncate">{service.pid ? `PID ${service.pid}` : "No process"}{service.last_error ? ` · ${service.last_error}` : ""}</div>
+          </div>
           <div className="row-end">
             <Badge tone={tone}>
               <StatusDot tone={tone} pulse={tone === "warn"} /> {service.state}
@@ -276,6 +279,11 @@ export function serviceRows(instance: Instance, actions: RowActions): Row[] {
               <StatusDot tone={tone} /> {service.state}
             </Badge>
           </div>
+          {service.description && (
+            <Field label="Description">
+              <span className="wrap">{service.description}</span>
+            </Field>
+          )}
           <div className="detail-actions">
             <Button icon="layers" onClick={() => actions.openService(name, "urls")}>
               URLs

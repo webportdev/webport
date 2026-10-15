@@ -67,6 +67,7 @@ env:
 
 services:
   api:
+    description: Application HTTP API # optional plain-text service description
     command: [go, run, ./cmd/api]
     working_dir: .
     env: {API_PORT: "${ports.api}"}
@@ -108,6 +109,14 @@ profiles:
     services: [api]
     env: {PROFILE_NAME: default}
 ```
+
+Each service may set an optional string `description`. It is literal display
+text, with no interpolation, and appears in `webport dev config` (including
+`--format json`), live `webport dev status --format json`, and service rows
+and details in the terminal and web dashboards. Empty or omitted descriptions
+are hidden. Descriptions are public session metadata; keep secrets out of them.
+The local configuration may override or clear a description with `""`.
+Restart the session to apply edits to a running service's description.
 
 ### Identity and paths
 

@@ -5,8 +5,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/webportdev/webport/internal/devsession/state"
 )
 
 func TestRestartReplacesServiceAndRetainsSessionControl(t *testing.T) {
@@ -19,6 +22,7 @@ worktree_root: .
 profiles: {default: {services: [server]}}
 services:
   server:
+    description: Original server
     command: [sh, -c, "while true; do sleep 1; done"]
 `), 0600)
 	if err != nil {
@@ -49,6 +53,32 @@ services:
 		}
 	}
 	waitReady()
+	assertDescription := func(want string) {
+		t.Helper()
+		status, err := Status(options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := status.(state.LiveState).Services["server"].Description; got != want {
+			t.Fatalf("live description = %q, want %q", got, want)
+		}
+		resolved, err := InspectConfig(ctx, Options{ConfigPath: path, PreferLive: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := resolved.Services["server"].Description; got != want {
+			t.Fatalf("live config description = %q, want %q", got, want)
+		}
+	}
+	assertDescription("Original server")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.ReplaceAll(string(content), "Original server", "Updated server")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	assertDescription("Original server")
 	response, err := Control(ctx, options, "exec-info", map[string]any{"service": "server"})
 	if err != nil || !response.OK {
 		t.Fatalf("control before restart: %v, %+v", err, response)
@@ -58,6 +88,7 @@ services:
 		t.Fatalf("restart: %v, %+v", err, response)
 	}
 	waitReady()
+	assertDescription("Updated server")
 	response, err = Control(ctx, options, "stop", nil)
 	if err != nil || !response.OK {
 		t.Fatalf("stop: %v, %+v", err, response)

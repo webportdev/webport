@@ -100,6 +100,20 @@ selection detail pane on wide terminals. Smaller terminals use a compact list.
 Use `--api URL` to select the daemon API; instance control remains local to
 this user's runtime directory.
 
+Services can include an optional description in `.webport.yaml`:
+
+```yaml
+services:
+  api:
+    description: Application HTTP API
+    command: [go, run, ./cmd/api]
+```
+
+Descriptions appear in service rows and details in both dashboards, in
+`webport dev config`, and in live `webport dev status --format json` under
+`services.api.description`. They are literal text without interpolation;
+empty or omitted descriptions are hidden. Restart the session to apply edits.
+
 The Instances tab shows project/branch, profile, readiness, and worktree.
 Press Enter to browse services, then use the URLs, Environment, and Logs tabs for
 that service. Logs show the last 200 lines (up to 64 KiB) of each saved stream

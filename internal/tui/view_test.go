@@ -12,6 +12,45 @@ import (
 	"github.com/webportdev/webport/internal/route"
 )
 
+func TestServiceDescriptionsAreVisibleSearchableAndPlainText(t *testing.T) {
+	m, _ := fixtureModel()
+	m.instanceID, m.service, m.page = "a", "server", servicesPage
+	m.width, m.height = 140, 40
+	m.snapshot.Instances[0].Routes = nil
+	service := m.snapshot.Instances[0].Services["server"]
+	service.Description = "Application frontend\n\x1b[31mSecond line\x1b[0m\a"
+	m.snapshot.Instances[0].Services["server"] = service
+	rows := m.rows()
+	if len(rows) != 1 || !strings.Contains(m.rowLabel(rows[0], 90), "Application frontend") {
+		t.Fatalf("service row omitted description: %+v", rows)
+	}
+	details := ansi.Strip(strings.Join(m.detailLines(90), "\n"))
+	if !strings.Contains(details, "DESCRIPTION\nApplication frontend Second line") {
+		t.Fatalf("service details = %q", details)
+	}
+	view := m.View()
+	if strings.Contains(view, "\x1b[31m") || strings.ContainsRune(view, '\a') {
+		t.Fatalf("description rendered control characters: %q", view)
+	}
+	expanded, _ := key(m, "d")
+	if !strings.Contains(expanded.View(), "Application frontend") {
+		t.Fatal("expanded details omitted description")
+	}
+	m.filter = "frontend"
+	if rows := m.rows(); len(rows) != 1 || rows[0].id != "server" {
+		t.Fatalf("description search = %+v", rows)
+	}
+	service.Description = ""
+	m.snapshot.Instances[0].Services["server"] = service
+	if len(m.rows()) != 0 {
+		t.Fatal("description filter matched service without a description")
+	}
+	m.filter = ""
+	if strings.Contains(strings.Join(m.detailLines(90), "\n"), "DESCRIPTION") {
+		t.Fatal("empty description has a detail field")
+	}
+}
+
 func TestLongURLLinksSurviveWrappingClippingAndOverlays(t *testing.T) {
 	profile := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
