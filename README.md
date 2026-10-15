@@ -552,7 +552,14 @@ mise run installer-test-macos
 mise run dev
 ```
 
-For web UI work, run `mise run dev` (a development daemon whose UI listens on
+For a quick look at the web UI, run `webport dev` (or `mise run preview-webui`)
+from the repository root. It starts Vite with hot reload and a built-in fake
+backend with sample instances, routes, environment, and logs, and publishes it
+at the printed HTTPS URL. Sign in with `webport-test-pw`, or set
+`WEBPORT_WEBUI_MOCK_PASSWORD` in `.webport.yaml`. Stop it with
+`webport dev stop`.
+
+For web UI work against a real daemon, run `mise run dev` (a development daemon whose UI listens on
 `127.0.0.1:7357`) and `mise run dev-webui` (Vite hot reload). Point
 `webport webui` and sessions at that daemon with
 `WEBPORT_SOCKET_PATH=$(mise run --quiet dev-socket)`.

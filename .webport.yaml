@@ -1,0 +1,30 @@
+# Quick preview of the web UI with a fake backend: run "webport dev" (or
+# "mise run preview-webui") from the repository root. Vite hot-reloads the
+# UI behind the printed HTTPS URL; sign in with WEBPORT_WEBUI_MOCK_PASSWORD.
+version: 1
+project: webport-preview
+
+ports:
+  webui: {first_free: 5173}
+
+env:
+  WEBPORT_WEBUI_MOCK_PASSWORD: webport-test-pw
+
+profiles:
+  default: {services: [webui]}
+
+services:
+  deps:
+    command: [npm, --prefix, webui, install, --no-audit, --no-fund]
+    completion: exit
+
+  webui:
+    depends_on: [deps]
+    command: [npm, --prefix, webui, run, dev:mock, --, --host, 127.0.0.1, --port, "${ports.webui}", --strictPort]
+    ready:
+      http:
+        url: http://127.0.0.1:${ports.webui}/
+        status: [200]
+        overall_timeout: 60s
+    route:
+      port: webui

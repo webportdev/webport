@@ -9,7 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "dev:mock": "WEBPORT_WEBUI_MOCK=1 vite"
   },
   "dependencies": {
     "react": "19.3.0",

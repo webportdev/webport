@@ -66,6 +66,10 @@ echo "Then enable the UI: WEBPORT_SOCKET_PATH=\"$(cd .. && mise run --quiet dev-
 npm run dev
 """
 
+[tasks.preview-webui]
+description = "Preview the web UI with a fake backend behind a webport HTTPS route"
+run = "webport dev"
+
 [tasks.dev-socket]
 description = "Print the socket path used by mise run dev"
 run = 'printf "%s\\n" "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/webport-dev.sock"'
