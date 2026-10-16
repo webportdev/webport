@@ -57,13 +57,18 @@ printf 'CF_DNS_API_TOKEN=test-secret\n' >"$credentials"
 
 skill_home="$tmp/skill-home"
 HOME="$skill_home" "$INSTALLER" --ai-skill --non-interactive --yes
-for skill_path in \
+shared_skill_path="$skill_home/.agents/skills/webport-development/SKILL.md"
+claude_skill_path="$skill_home/.claude/skills/webport-development/SKILL.md"
+assert_file "$shared_skill_path"
+assert_contains "$shared_skill_path" "name: webport-development"
+[[ -L "$claude_skill_path" ]] || fail "Claude Code skill is not linked to the shared skill"
+[[ "$(readlink "$claude_skill_path")" == "$shared_skill_path" ]] ||
+	fail "Claude Code skill link does not target the shared skill"
+for legacy_path in \
 	"$skill_home/.codex/skills/webport-development/SKILL.md" \
 	"$skill_home/.config/opencode/skills/webport-development/SKILL.md" \
-	"$skill_home/.pi/agent/skills/webport-development/SKILL.md" \
-	"$skill_home/.claude/skills/webport-development/SKILL.md"; do
-	assert_file "$skill_path"
-	assert_contains "$skill_path" "name: webport-development"
+	"$skill_home/.pi/agent/skills/webport-development/SKILL.md"; do
+	[[ ! -e "$legacy_path" && ! -L "$legacy_path" ]] || fail "legacy skill copy remains at $legacy_path"
 done
 
 root="$tmp/full"
@@ -110,15 +115,23 @@ for skill_path in "${upgrade_skill_paths[@]}"; do
 	assert_contains "$skill_path" "old skill"
 	assert_contains "$tmp/upgrade-skill-dry-run.log" "$skill_path"
 done
+assert_contains "$tmp/upgrade-skill-dry-run.log" "$upgrade_skill_home/.agents/skills/webport-development/SKILL.md"
+assert_contains "$tmp/upgrade-skill-dry-run.log" "$upgrade_skill_home/.claude/skills/webport-development/SKILL.md"
 HOME="$upgrade_skill_home" WEBPORT_INSTALL_ROOT="$root" "$INSTALLER" \
 	--upgrade --webport-source local --traefik-source local --artifact-dir "$artifacts" \
 	--non-interactive
 for skill_path in "${upgrade_skill_paths[@]}"; do
-	cmp -s "$SCRIPT_DIR/../skills/webport-development/SKILL.md" "$skill_path" ||
-		fail "upgrade did not refresh $skill_path"
+	[[ ! -e "$skill_path" && ! -L "$skill_path" ]] ||
+		fail "upgrade did not remove migrated legacy skill copy $skill_path"
 done
-[[ ! -e "$upgrade_skill_home/.claude/skills/webport-development/SKILL.md" ]] ||
-	fail "upgrade installed a previously absent skill"
+cmp -s "$SCRIPT_DIR/../skills/webport-development/SKILL.md" \
+	"$upgrade_skill_home/.agents/skills/webport-development/SKILL.md" ||
+	fail "upgrade did not create the shared skill"
+[[ -L "$upgrade_skill_home/.claude/skills/webport-development/SKILL.md" ]] ||
+	fail "upgrade did not link Claude Code to the shared skill"
+[[ "$(readlink "$upgrade_skill_home/.claude/skills/webport-development/SKILL.md")" == \
+	"$upgrade_skill_home/.agents/skills/webport-development/SKILL.md" ]] ||
+	fail "upgrade created an incorrect Claude Code skill link"
 
 kill "$old_cli_pid"
 wait "$old_cli_pid" 2>/dev/null || true

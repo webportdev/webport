@@ -133,36 +133,87 @@ install_file() {
 
 install_ai_skill() {
 	local existing_only=${1:-0}
-	local skill_name=webport-development source destination answer
-	local destinations
+	local skill_name=webport-development source shared_dir shared_skill claude_skill skill_home=${HOME:-}
+	local destination legacy_path answer needs_confirmation=0
+	local legacy_dirs
 	source="$REPO_DIR/skills/$skill_name/SKILL.md"
-	[[ -n "${HOME:-}" && "$HOME" != / ]] || die "HOME must point to a user home directory"
-	[[ -r "$source" ]] || die "agent skill asset is unavailable: $source"
-	destinations=(
-		"$HOME/.codex/skills/$skill_name"
-		"$HOME/.config/opencode/skills/$skill_name"
-		"$HOME/.pi/agent/skills/$skill_name"
-		"$HOME/.claude/skills/$skill_name"
+	[[ -n "$skill_home" && "$skill_home" != / ]] || die "HOME must point to a user home directory"
+	shared_dir="$skill_home/.agents/skills/$skill_name"
+	shared_skill="$shared_dir/SKILL.md"
+	claude_skill="$skill_home/.claude/skills/$skill_name/SKILL.md"
+	legacy_dirs=(
+		"$skill_home/.codex/skills/$skill_name"
+		"$skill_home/.config/opencode/skills/$skill_name"
+		"$skill_home/.pi/agent/skills/$skill_name"
 	)
-	for destination in "${destinations[@]}"; do
-		if (( existing_only )) && [[ ! -e "$destination/SKILL.md" && ! -L "$destination/SKILL.md" ]]; then
-			continue
+	[[ -r "$source" ]] || die "agent skill asset is unavailable: $source"
+	if (( existing_only )); then
+		local found=0
+		[[ -e "$shared_skill" || -L "$shared_skill" || -e "$claude_skill" || -L "$claude_skill" ]] && found=1
+		for destination in "${legacy_dirs[@]}"; do
+			[[ -e "$destination/SKILL.md" || -L "$destination/SKILL.md" ]] && found=1
+		done
+		(( found )) || return 0
+	fi
+
+	if (( ! DRY_RUN )); then
+		[[ ! -d "$shared_skill" || -L "$shared_skill" ]] || die "agent skill path is a directory: $shared_skill"
+		[[ ! -d "$claude_skill" || -L "$claude_skill" ]] || die "Claude Code skill path is a directory: $claude_skill"
+		for destination in "${legacy_dirs[@]}"; do
+			legacy_path="$destination/SKILL.md"
+			[[ ! -d "$legacy_path" || -L "$legacy_path" ]] || die "legacy agent skill path is a directory: $legacy_path"
+		done
+		if [[ -e "$shared_skill" || -L "$shared_skill" ]]; then
+			needs_confirmation=1
 		fi
-		if (( DRY_RUN )); then
-			log "dry-run: install agent skill at $destination/SKILL.md"
-			continue
+		for destination in "${legacy_dirs[@]}"; do
+			if [[ -e "$destination/SKILL.md" || -L "$destination/SKILL.md" ]]; then
+				needs_confirmation=1
+			fi
+		done
+		if [[ -e "$claude_skill" || -L "$claude_skill" ]]; then
+			needs_confirmation=1
 		fi
-		if [[ -e "$destination/SKILL.md" || -L "$destination/SKILL.md" ]]; then
-			if (( ! existing_only && ! ASSUME_YES )); then
-				(( NON_INTERACTIVE )) && die "agent skill already exists at $destination/SKILL.md; rerun with --yes"
-				[[ -t 0 ]] || die "replacing an agent skill requires an interactive stdin or --yes"
-				read -r -p "Replace $destination/SKILL.md? [y/N] " answer
-				[[ "$answer" =~ ^[Yy]$ ]] || { log "Skipped $destination/SKILL.md"; continue; }
+		if (( needs_confirmation && ! existing_only && ! ASSUME_YES )); then
+			(( NON_INTERACTIVE )) && die "agent skill already exists; rerun with --yes to migrate or replace it"
+			[[ -t 0 ]] || die "migrating an existing agent skill requires an interactive stdin or --yes"
+			read -r -p "Install the shared Webport skill and migrate existing copies? [y/N] " answer
+			[[ "$answer" =~ ^[Yy]$ ]] || { log "Skipped agent skill installation"; return 0; }
+		fi
+	fi
+
+	if (( DRY_RUN )); then
+		log "dry-run: install agent skill at $shared_skill"
+	else
+		mkdir -p "$shared_dir"
+		[[ ! -L "$shared_skill" ]] || rm -f "$shared_skill"
+		install -m 0644 "$source" "$shared_skill"
+		log "Installed shared agent skill at $shared_skill"
+	fi
+
+	if (( DRY_RUN )); then
+		log "dry-run: link Claude Code skill at $claude_skill to $shared_skill"
+	else
+		mkdir -p "$(dirname "$claude_skill")"
+		if [[ -L "$claude_skill" ]] && [[ "$(readlink "$claude_skill")" == "$shared_skill" ]]; then
+			:
+		else
+			[[ ! -e "$claude_skill" && ! -L "$claude_skill" ]] || rm -f "$claude_skill"
+			ln -s "$shared_skill" "$claude_skill"
+		fi
+		log "Linked Claude Code skill at $claude_skill"
+	fi
+
+	for destination in "${legacy_dirs[@]}"; do
+		legacy_path="$destination/SKILL.md"
+		if [[ -e "$legacy_path" || -L "$legacy_path" ]]; then
+			if (( DRY_RUN )); then
+				log "dry-run: remove legacy agent skill copy at $legacy_path"
+			else
+				rm -f "$legacy_path"
+				log "Removed legacy agent skill copy at $legacy_path"
 			fi
 		fi
-		mkdir -p "$destination"
-		install -m 0644 "$source" "$destination/SKILL.md"
-		log "Installed agent skill at $destination/SKILL.md"
 	done
 }
 

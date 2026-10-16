@@ -62,11 +62,13 @@ webport upgrade
 
 The upgrade reuses the saved domain, TLS mode, DNS provider, zone, and
 credentials and replaces the installed `webport` CLI, `webportctl`, and
-`webport-dns` binaries. It also refreshes existing Webport skill installations
-for Codex, OpenCode, Pi, and Claude Code in the invoking user's home directory,
-without prompting or requiring `--yes`. This replaces local edits to those
-skill files; absent skill installations are left untouched. `--dry-run`
-reports skill updates without writing them. Foreground development sessions that were already
+`webport-dns` binaries. It also refreshes an existing Webport skill in
+`~/.agents/skills/webport-development`, migrates legacy per-agent copies, and
+maintains Claude Code's compatibility link at
+`~/.claude/skills/webport-development/SKILL.md`. It does this without
+prompting or requiring `--yes`, replacing local edits to the skill file.
+Users without an existing skill installation are left untouched. `--dry-run`
+reports skill updates and migrations without writing them. Foreground development sessions that were already
 running keep their original process until restarted; `webport inspect` can
 still read their older session state. The upgrade does not change local-CA
 trust unless `--trust-local-ca` is explicitly supplied.
@@ -80,15 +82,17 @@ Use `command -v webport` to check which copy your shell runs.
 An already-open `webport tui` also keeps its original binary. Quit the dashboard
 with `q` and launch `webport tui` again to pick up an upgrade.
 
-Install the Webport development skill for Codex, OpenCode, Pi, and Claude Code
-without installing or changing the Webport daemon stack:
+Install the shared Webport development skill for Codex, OpenCode, and Pi, with
+a Claude Code compatibility link, without installing or changing the Webport
+daemon stack:
 
 ```bash
 webport install --ai-skill
 ```
 
-If a skill file already exists, the command asks before replacing it. Use
-`--yes` for unattended replacement.
+The skill is stored once at `~/.agents/skills/webport-development/SKILL.md`.
+If an existing skill installation needs migration or replacement, the command
+asks first. Use `--yes` for unattended migration or replacement.
 
 ## Terminal dashboard
 

@@ -20,14 +20,17 @@ configuration with:
 webport upgrade
 ```
 
-Install the user-global Webport development skill for Codex, OpenCode, Pi, and
-Claude Code without changing the daemon stack:
+Install the shared user-global Webport development skill for Codex, OpenCode,
+and Pi, with a Claude Code compatibility link, without changing the daemon
+stack:
 
 ```bash
 webport install --ai-skill
 ```
 
-Use `--yes` to replace existing skill files without prompting.
+The skill is stored once at `~/.agents/skills/webport-development/SKILL.md`.
+Existing per-agent copies are migrated; use `--yes` to migrate or replace
+existing skill files without prompting.
 
 The upgrade preserves the configured domain, TLS mode, DNS provider, zone, and
 credentials. Use `--trust-local-ca` explicitly if the local CA should also be
